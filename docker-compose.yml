@@ -1,0 +1,32 @@
+services:
+  discord-gateway:
+    build: ./discord-gateway
+    ports:
+      - "127.0.0.1:3023:3023"
+    env_file:
+      - ./discord-gateway/.env
+    restart: unless-stopped
+
+  slack-gateway:
+    build: ./slack-gateway
+    ports:
+      - "127.0.0.1:3022:3022"
+    env_file:
+      - ./slack-gateway/.env
+    restart: unless-stopped
+
+  email-gateway:
+    build: ./email-gateway
+    ports:
+      - "127.0.0.1:3020:3020"
+    env_file:
+      - ./email-gateway/.env
+    restart: unless-stopped
+
+  whatsapp-gateway:
+    build: ./whatsapp-gateway
+    ports:
+      - "127.0.0.1:3021:3021"
+    env_file:
+      - ./whatsapp-gateway/.env
+    restart: unless-stopped

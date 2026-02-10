@@ -1,0 +1,16 @@
+# Email address → Agent routing
+# This is a temporary local config. Will be replaced by AI Maestro's
+# GET /api/agents/email-index once the email identity spec is implemented.
+
+# routes:
+  # Explicit address → agent mappings
+  # "agent@your-domain.com":
+  #   agent: your-agent
+  #   host: your-host
+
+# Tenant defaults (catch-all per tenant)
+# When no explicit route matches, use these
+defaults:
+  default:
+    agent: default-agent
+    host: localhost

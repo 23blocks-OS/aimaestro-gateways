@@ -1,0 +1,12 @@
+# WhatsApp phone → agent routing
+#
+# phones:
+#   "+1234567890":
+#     agent: your-agent
+#     host: your-host
+#
+# default: catch-all for unmatched phones
+
+default:
+  agent: default-agent
+  host: localhost

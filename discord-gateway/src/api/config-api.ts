@@ -1,0 +1,112 @@
+/**
+ * Config Management API
+ *
+ * GET/PATCH endpoints for gateway configuration.
+ */
+
+import { Router, Request, Response } from 'express';
+import { readFile, writeFile } from 'fs/promises';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import type { GatewayConfig } from '../types.js';
+import type { SecurityConfig } from '../content-security.js';
+
+const __filename_local = fileURLToPath(import.meta.url);
+const __dirname_local = dirname(__filename_local);
+
+export function createConfigRouter(
+  getConfig: () => GatewayConfig,
+  getSecurityConfig: () => SecurityConfig,
+  updateSecurityConfig: (config: SecurityConfig) => void,
+  adminToken?: string
+): Router {
+  const router = Router();
+
+  /**
+   * GET /api/config — Overview (sanitized, no tokens)
+   */
+  router.get('/', (req: Request, res: Response) => {
+    const config = getConfig();
+    res.json({
+      port: config.port,
+      debug: config.debug,
+      aimaestro: {
+        apiUrl: config.aimaestro.apiUrl,
+        botAgent: config.aimaestro.botAgent,
+        hostId: config.aimaestro.hostId,
+        defaultAgent: config.aimaestro.defaultAgent,
+      },
+      discord: {
+        configured: !!config.discord.botToken,
+      },
+      cache: config.cache,
+      polling: config.polling,
+    });
+  });
+
+  /**
+   * GET /api/config/security — Security settings
+   */
+  router.get('/security', (req: Request, res: Response) => {
+    const secConfig = getSecurityConfig();
+    res.json({
+      operatorDiscordIds: secConfig.operatorDiscordIds,
+    });
+  });
+
+  /**
+   * PATCH /api/config/security — Update operator whitelist
+   * Body: { operatorDiscordIds: string[] }
+   */
+  router.patch('/security', async (req: Request, res: Response) => {
+    if (!adminToken) {
+      return res.status(403).json({ error: 'ADMIN_TOKEN required for security configuration changes' });
+    }
+
+    const { operatorDiscordIds } = req.body;
+
+    if (!Array.isArray(operatorDiscordIds)) {
+      return res.status(400).json({ error: 'operatorDiscordIds must be an array' });
+    }
+
+    const normalized = operatorDiscordIds.map((id: string) => id.trim()).filter(Boolean);
+
+    // Validate Discord IDs (must be numeric snowflake IDs)
+    const invalidIds = normalized.filter((id: string) => !/^\d+$/.test(id));
+    if (invalidIds.length > 0) {
+      return res.status(400).json({ error: `Invalid Discord ID(s): ${invalidIds.join(', ')}. Discord IDs must be numeric.` });
+    }
+
+    const newSecConfig: SecurityConfig = { operatorDiscordIds: normalized };
+    updateSecurityConfig(newSecConfig);
+
+    // Persist to .env
+    await updateEnvVariable('OPERATOR_DISCORD_IDS', normalized.join(','));
+
+    res.json({ ok: true, operatorDiscordIds: normalized });
+  });
+
+  return router;
+}
+
+/**
+ * Update a variable in the .env file.
+ */
+async function updateEnvVariable(key: string, value: string): Promise<void> {
+  // Strip newlines to prevent .env injection
+  value = value.replace(/[\r\n]/g, '');
+  const envPath = resolve(__dirname_local, '..', '..', '.env');
+  try {
+    let content = await readFile(envPath, 'utf-8');
+    const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`^${escapedKey}=.*$`, 'm');
+    if (regex.test(content)) {
+      content = content.replace(regex, `${key}=${value}`);
+    } else {
+      content += `\n${key}=${value}`;
+    }
+    await writeFile(envPath, content, 'utf-8');
+  } catch (err) {
+    console.error(`[CONFIG-API] Failed to update .env:`, err);
+  }
+}
