@@ -1,48 +1,43 @@
 /**
- * Stats API
+ * Stats API (AMP Protocol)
  *
  * Gateway metrics endpoint.
  */
 
 import { Router, Request, Response } from 'express';
-import { GatewayConfig } from '../config.js';
+import type { GatewayConfig } from '../types.js';
 import { getEventCount, getTodayStats } from './activity-log.js';
 
 const startTime = Date.now();
 
-let cachedAimaestroStatus: boolean | null = null;
-let lastAimaestroCheck = 0;
-const HEALTH_CACHE_TTL_MS = 30000;
+let cachedMaestroStatus: boolean | null = null;
+let lastMaestroCheck = 0;
 
 let cachedMandrillStatus: boolean | null = null;
 let lastMandrillCheck = 0;
 
+const HEALTH_CACHE_TTL_MS = 30000;
+
 export function createStatsRouter(getConfig: () => GatewayConfig): Router {
   const router = Router();
 
-  /**
-   * GET /api/stats — Gateway metrics
-   */
   router.get('/', async (req: Request, res: Response) => {
     const config = getConfig();
     const uptime = Date.now() - startTime;
 
-    // Check AI Maestro connectivity (cached for 30s)
     const now = Date.now();
-    if (cachedAimaestroStatus === null || now - lastAimaestroCheck > HEALTH_CACHE_TTL_MS) {
+    if (cachedMaestroStatus === null || now - lastMaestroCheck > HEALTH_CACHE_TTL_MS) {
       try {
-        const resp = await fetch(`${config.aimaestro.apiUrl}/api/health`, {
+        const resp = await fetch(`${config.amp.maestroUrl}/api/v1/health`, {
           signal: AbortSignal.timeout(3000),
         });
-        cachedAimaestroStatus = resp.ok;
+        cachedMaestroStatus = resp.ok;
       } catch {
-        cachedAimaestroStatus = false;
+        cachedMaestroStatus = false;
       }
-      lastAimaestroCheck = now;
+      lastMaestroCheck = now;
     }
-    const aimaestroReachable = cachedAimaestroStatus;
 
-    // Check Mandrill connectivity (cached for 30s)
     if (cachedMandrillStatus === null || now - lastMandrillCheck > HEALTH_CACHE_TTL_MS) {
       try {
         const resp = await fetch('https://mandrillapp.com/api/1.0/users/ping', {
@@ -57,21 +52,25 @@ export function createStatsRouter(getConfig: () => GatewayConfig): Router {
       }
       lastMandrillCheck = now;
     }
-    const mandrillReachable = cachedMandrillStatus;
 
     const today = getTodayStats();
 
     res.json({
       status: 'online',
-      version: '0.1.0',
+      protocol: 'AMP',
+      version: '0.2.0',
       uptime,
       uptimeHuman: formatUptime(uptime),
       port: config.port,
       totalEventsLogged: getEventCount(),
       today,
       connections: {
-        aimaestro: aimaestroReachable,
-        mandrill: mandrillReachable,
+        maestro: cachedMaestroStatus,
+        mandrill: cachedMandrillStatus,
+      },
+      amp: {
+        agent: config.amp.agentAddress,
+        tenant: config.amp.tenant,
       },
       tenants: Object.keys(config.mandrill.webhookKeys),
       routing: {

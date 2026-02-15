@@ -1,41 +1,35 @@
 /**
- * AI Maestro - Slack Gateway
+ * AI Maestro - Slack Gateway (AMP Protocol)
  *
  * Connects to Slack via Bolt (Socket Mode) and bridges messages with
- * AI Maestro agents. Runs as a long-lived service managed by pm2.
+ * AI Maestro agents using the AMP protocol. Runs as a long-lived
+ * service managed by pm2.
  *
  * Features:
- * - Bidirectional Slack <-> AI Maestro messaging
- * - Multi-host agent resolution with caching
+ * - Bidirectional Slack <-> AMP messaging
+ * - AMP auto-registration on first boot
+ * - Filesystem-based inbox polling (no HTTP overhead)
  * - Content security (34 injection pattern detection)
  * - Activity logging (ring buffer, 500 events)
  * - Health endpoint and management APIs
+ * - Thread context persistence across restarts
  * - Graceful shutdown
  */
 
+import * as path from 'path';
 import { timingSafeEqual } from 'crypto';
 import express, { Request, Response, NextFunction } from 'express';
 import { App } from '@slack/bolt';
 import { loadConfig } from './config.js';
 import { loadSecurityConfig, type SecurityConfig } from './content-security.js';
 import { createAgentResolver } from './agent-resolver.js';
+import { ThreadStore } from './thread-store.js';
 import { registerInboundHandlers } from './inbound.js';
 import { startOutboundPoller } from './outbound.js';
 import { createConfigRouter } from './api/config-api.js';
 import { createActivityRouter } from './api/activity-api.js';
 import { createStatsRouter } from './api/stats-api.js';
 import type { GatewayConfig } from './types.js';
-
-// Load config
-let config: GatewayConfig;
-let securityConfig: SecurityConfig;
-try {
-  config = loadConfig();
-  securityConfig = loadSecurityConfig();
-} catch (err) {
-  console.error('[FATAL] Failed to load config:', err);
-  process.exit(1);
-}
 
 /**
  * Bearer token authentication middleware for management API routes.
@@ -57,15 +51,26 @@ function authMiddleware(adminToken: string) {
 }
 
 async function main(): Promise<void> {
+  // Load config (async — may trigger AMP auto-registration)
+  let config: GatewayConfig;
+  let securityConfig: SecurityConfig;
+  try {
+    config = await loadConfig();
+    securityConfig = loadSecurityConfig();
+  } catch (err) {
+    console.error('[FATAL] Failed to load config:', err);
+    process.exit(1);
+  }
+
   console.log('========================================');
-  console.log('AI Maestro - Slack Gateway');
+  console.log('AI Maestro - Slack Gateway (AMP)');
   console.log('========================================');
   console.log(`Port: ${config.port}`);
-  console.log(`Default agent: ${config.aimaestro.defaultAgent}`);
-  console.log(`Bot agent: ${config.aimaestro.botAgent}`);
-  console.log(`Host ID: ${config.aimaestro.hostId}`);
-  console.log(`AI Maestro API: ${config.aimaestro.apiUrl}`);
-  console.log(`Cache TTLs: agent=${config.cache.agentTtlMs}ms, hosts=${config.cache.hostsTtlMs}ms, slack=${config.cache.slackUserTtlMs}ms`);
+  console.log(`Agent: ${config.amp.agentAddress}`);
+  console.log(`Default agent: ${config.amp.defaultAgent}`);
+  console.log(`Tenant: ${config.amp.tenant}`);
+  console.log(`Maestro: ${config.amp.maestroUrl}`);
+  console.log(`Inbox: ${config.amp.inboxDir}`);
   console.log(`Poll interval: ${config.polling.intervalMs}ms`);
   console.log(`Security: ${securityConfig.operatorSlackIds.length} operator Slack ID(s) whitelisted`);
   console.log(`Debug: ${config.debug}`);
@@ -81,20 +86,25 @@ async function main(): Promise<void> {
   // Create agent resolver
   const resolver = createAgentResolver(config, slackApp);
 
-  // Pre-warm caches
-  console.log('Pre-warming caches...');
-  await resolver.lookupAgentSmart(config.aimaestro.defaultAgent);
-  console.log(`  Agent cache: ${resolver.getAgentCacheSize()} entries`);
+  // Create thread store with persistence
+  const threadStore = new ThreadStore();
+  const threadStorePath = path.resolve(
+    path.dirname(new URL(import.meta.url).pathname),
+    '..',
+    'thread-store.json'
+  );
+  threadStore.load(threadStorePath);
+  threadStore.startCleanup(60000);
 
   // Register Slack event handlers
-  registerInboundHandlers(slackApp, config, resolver, securityConfig);
+  registerInboundHandlers(slackApp, config, resolver, securityConfig, threadStore);
 
   // Start the Slack app (Socket Mode connection)
   await slackApp.start();
   console.log('Connected to Slack (Socket Mode)');
 
-  // Start polling for agent responses
-  const stopPoller = startOutboundPoller(config, slackApp, resolver);
+  // Start polling AMP inbox for agent responses
+  const stopPoller = startOutboundPoller(config, slackApp, threadStore);
 
   // Express server for health checks and management APIs
   const httpApp = express();
@@ -105,9 +115,14 @@ async function main(): Promise<void> {
     res.json({
       status: 'ok',
       service: 'slack-gateway',
+      protocol: 'AMP',
       slack: { connected: true },
-      aimaestro: { url: config.aimaestro.apiUrl },
-      cache: { agents: resolver.getAgentCacheSize() },
+      amp: {
+        agent: config.amp.agentAddress,
+        maestro: config.amp.maestroUrl,
+        tenant: config.amp.tenant,
+      },
+      threads: threadStore.size(),
       timestamp: new Date().toISOString(),
     });
   });
@@ -130,13 +145,7 @@ async function main(): Promise<void> {
 
   httpApp.use('/api/activity', createActivityRouter());
 
-  httpApp.use(
-    '/api/stats',
-    createStatsRouter(
-      () => config,
-      () => resolver.getAgentCacheSize()
-    )
-  );
+  httpApp.use('/api/stats', createStatsRouter(() => config));
 
   const server = httpApp.listen(config.port, '127.0.0.1', () => {
     console.log(`[HTTP] Management API on http://127.0.0.1:${config.port}`);
@@ -150,11 +159,11 @@ async function main(): Promise<void> {
   console.log('  GET  /api/activity  - Activity log');
   console.log('========================================');
   console.log('');
-  console.log('Gateway ready!');
+  console.log('Gateway ready! (AMP Protocol)');
   console.log('  - DM the bot or @mention in channels');
   console.log('  - Use @AIM:agent-name to route to specific agents');
-  console.log('  - Messages forwarded to AI Maestro network');
-  console.log('  - Responses sent back to Slack');
+  console.log('  - Messages routed via AMP protocol');
+  console.log('  - Responses delivered via filesystem inbox');
 
   // Graceful shutdown
   let isShuttingDown = false;
@@ -166,6 +175,10 @@ async function main(): Promise<void> {
     console.log(`\n[SHUTDOWN] Received ${signal}, shutting down...`);
 
     stopPoller();
+    threadStore.stopCleanup();
+    threadStore.save(threadStorePath);
+    console.log('[SHUTDOWN] Thread store saved');
+
     resolver.clearCaches();
 
     server.close(() => {

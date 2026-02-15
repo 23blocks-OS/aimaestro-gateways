@@ -1,52 +1,35 @@
 /**
- * Email Gateway Configuration
+ * Email Gateway Configuration (AMP Protocol)
  *
  * Loads config from:
- * - .env file (port, AI Maestro URL, bot identity)
+ * - .env file (port, AMP credentials, Mandrill keys)
  * - credentials.yaml (Mandrill API key + webhook keys)
- * - routing.yaml (email→agent mapping, stopgap until AI Maestro email index)
+ * - routing.yaml (email→agent mapping)
+ *
+ * On first boot without AMP_API_KEY, triggers auto-registration.
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { parse as parseYaml } from 'yaml';
+import { bootstrapAMP } from './amp-bootstrap.js';
+import type { GatewayConfig, RouteTarget } from './types.js';
 
-// Load .env from gateway directory
 const __filename_local = fileURLToPath(import.meta.url);
 const __dirname_local = dirname(__filename_local);
-dotenv.config({ path: resolve(__dirname_local, '..', '.env') });
 
-export interface RouteTarget {
-  agent: string;
-  host: string;
-}
-
-export interface GatewayConfig {
-  port: number;
-  debug: boolean;
-  aimaestro: {
-    apiUrl: string;
-    botAgent: string;
-    hostId: string;
-  };
-  mandrill: {
-    apiKey: string;
-    webhookKeys: Record<string, string>;
-  };
-  routing: {
-    routes: Record<string, RouteTarget>;
-    defaults: Record<string, RouteTarget>;
-  };
-  outbound: {
-    pollIntervalMs: number;
-  };
-  storage: {
-    attachmentsPath: string;
-  };
-  adminToken: string;
-  emailBaseDomain: string;
+// Try multiple .env locations
+const envCandidates = [
+  resolve(__dirname_local, '..', '.env'),
+  resolve(__dirname_local, '..', '.env.local'),
+];
+for (const envPath of envCandidates) {
+  if (existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+    break;
+  }
 }
 
 function loadYamlFile(path: string): any {
@@ -62,7 +45,61 @@ function loadYamlFile(path: string): any {
   }
 }
 
-export function loadConfig(): GatewayConfig {
+/**
+ * Resolve the AMP inbox directory from the .index.json file.
+ */
+function resolveInboxDir(agentAddress: string): string {
+  const agentsDir = resolve(process.env.HOME || '/root', '.agent-messaging', 'agents');
+  const indexPath = resolve(agentsDir, '.index.json');
+
+  try {
+    const index = JSON.parse(readFileSync(indexPath, 'utf-8'));
+    const agentName = agentAddress.split('@')[0];
+
+    // Try by name first, then check if value is a UUID
+    const agentId = index[agentName];
+    if (agentId) {
+      const inboxDir = resolve(agentsDir, agentId, 'messages', 'inbox');
+      if (existsSync(inboxDir)) return inboxDir;
+    }
+  } catch { /* Index not found */ }
+
+  return '';
+}
+
+export async function loadConfig(): Promise<GatewayConfig> {
+  const maestroUrl = process.env.AMP_MAESTRO_URL || process.env.AIMAESTRO_URL || 'http://127.0.0.1:23000';
+
+  // Auto-bootstrap if no AMP_API_KEY
+  let ampApiKey = process.env.AMP_API_KEY || '';
+  let ampAgentAddress = process.env.AMP_AGENT_ADDRESS || '';
+  let ampTenant = process.env.AMP_TENANT || '';
+  let ampInboxDir = process.env.AMP_INBOX_DIR || '';
+
+  if (!ampApiKey) {
+    const envFile = envCandidates.find(p => existsSync(p)) || resolve(__dirname_local, '..', '.env');
+    const result = await bootstrapAMP({
+      agentName: process.env.AMP_AGENT_NAME || 'email-bot',
+      maestroUrl,
+      tenant: process.env.AMP_TENANT,
+      alias: 'Email Bridge',
+      envFile,
+      metadata: {
+        agent_type: 'bridge',
+        channel_type: 'email',
+      },
+    });
+    ampApiKey = result.apiKey;
+    ampAgentAddress = result.address;
+    ampTenant = result.tenant;
+    ampInboxDir = result.inboxDir;
+  }
+
+  // Resolve inbox dir if not set
+  if (!ampInboxDir && ampAgentAddress) {
+    ampInboxDir = resolveInboxDir(ampAgentAddress);
+  }
+
   // Load credentials
   const credentialsPath = process.env.CREDENTIALS_FILE
     || resolve(__dirname_local, '..', '..', '..', 'credentials.yaml');
@@ -86,23 +123,28 @@ export function loadConfig(): GatewayConfig {
   if (routingData?.routes) {
     for (const [email, target] of Object.entries(routingData.routes)) {
       const t = target as any;
-      routes[email] = { agent: t.agent, host: t.host };
+      routes[email] = { agent: t.agent };
     }
   }
   if (routingData?.defaults) {
     for (const [tenant, target] of Object.entries(routingData.defaults)) {
       const t = target as any;
-      defaults[tenant] = { agent: t.agent, host: t.host };
+      defaults[tenant] = { agent: t.agent };
     }
   }
+
+  const defaultAgent = process.env.AMP_DEFAULT_AGENT || `pas-lola@${ampTenant}.aimaestro.local`;
 
   const config: GatewayConfig = {
     port: parseInt(process.env.PORT || '3020', 10),
     debug: process.env.DEBUG === 'true',
-    aimaestro: {
-      apiUrl: process.env.AIMAESTRO_URL || 'http://127.0.0.1:23000',
-      botAgent: process.env.BOT_AGENT || 'email-gateway',
-      hostId: process.env.HOST_ID || 'localhost',
+    amp: {
+      apiKey: ampApiKey,
+      agentAddress: ampAgentAddress,
+      maestroUrl,
+      defaultAgent,
+      tenant: ampTenant,
+      inboxDir: ampInboxDir,
     },
     mandrill: {
       apiKey: credentials.mandrill.api_key,
@@ -129,20 +171,17 @@ export function loadConfig(): GatewayConfig {
   if (Object.keys(config.mandrill.webhookKeys).length === 0) {
     console.warn('[CONFIG] No webhook keys loaded - signature verification will fail');
   }
+  if (!config.amp.apiKey) {
+    throw new Error('AMP_API_KEY not available after bootstrap');
+  }
 
   return config;
 }
 
-/**
- * Get the routing file path.
- */
 export function getRoutingFilePath(): string {
   return process.env.ROUTING_FILE || resolve(__dirname_local, '..', 'routing.yaml');
 }
 
-/**
- * Reload routing configuration from disk into an existing config object.
- */
 export function reloadRouting(config: GatewayConfig): void {
   const routingPath = getRoutingFilePath();
   const routingData = loadYamlFile(routingPath);
@@ -153,13 +192,13 @@ export function reloadRouting(config: GatewayConfig): void {
   if (routingData?.routes) {
     for (const [email, target] of Object.entries(routingData.routes)) {
       const t = target as any;
-      routes[email] = { agent: t.agent, host: t.host };
+      routes[email] = { agent: t.agent };
     }
   }
   if (routingData?.defaults) {
     for (const [tenant, target] of Object.entries(routingData.defaults)) {
       const t = target as any;
-      defaults[tenant] = { agent: t.agent, host: t.host };
+      defaults[tenant] = { agent: t.agent };
     }
   }
 

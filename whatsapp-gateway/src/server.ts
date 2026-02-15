@@ -1,8 +1,8 @@
 /**
- * AI Maestro - WhatsApp Gateway
+ * AI Maestro - WhatsApp Gateway (AMP Protocol)
  *
- * Connects to WhatsApp via Baileys and bridges messages with AI Maestro agents.
- * Runs as a long-lived service managed by pm2.
+ * Connects to WhatsApp via Baileys and bridges messages with AI Maestro
+ * agents using the AMP protocol. Runs as a long-lived service managed by pm2.
  */
 
 import { timingSafeEqual } from 'crypto';
@@ -14,26 +14,6 @@ import { startOutboundPoller } from './outbound.js';
 import { createActivityRouter } from './api/activity-api.js';
 import type { GatewayConfig } from './types.js';
 
-// Load config
-let config: GatewayConfig;
-try {
-  config = loadConfig();
-} catch (err) {
-  console.error('[FATAL] Failed to load config:', err);
-  process.exit(1);
-}
-
-console.log('[STARTUP] WhatsApp Gateway v0.1.0');
-console.log(`[STARTUP] AI Maestro: ${config.aimaestro.apiUrl}`);
-console.log(`[STARTUP] Bot agent: ${config.aimaestro.botAgent}`);
-console.log(`[STARTUP] State dir: ${config.whatsapp.stateDir}`);
-console.log(`[STARTUP] DM policy: ${config.whatsapp.dmPolicy}`);
-console.log(`[STARTUP] Allow from: ${config.whatsapp.allowFrom.length > 0 ? config.whatsapp.allowFrom.join(', ') : '(all)'}`);
-
-/**
- * Bearer token authentication middleware for management API routes.
- * If ADMIN_TOKEN is not set, access is allowed (backwards compatibility).
- */
 function authMiddleware(adminToken: string) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!adminToken) {
@@ -49,55 +29,84 @@ function authMiddleware(adminToken: string) {
   };
 }
 
-// Express server for health checks and management
-const app = express();
-app.use(express.json());
+async function main(): Promise<void> {
+  // Load config (async — may trigger AMP auto-registration)
+  let config: GatewayConfig;
+  try {
+    config = await loadConfig();
+  } catch (err) {
+    console.error('[FATAL] Failed to load config:', err);
+    process.exit(1);
+  }
 
-// Health check (public, no auth required)
-app.get('/health', (_req, res) => {
-  const status = getStatus();
-  const selfJid = getSelfJid();
+  console.log('========================================');
+  console.log('AI Maestro - WhatsApp Gateway (AMP)');
+  console.log('========================================');
+  console.log(`Port: ${config.port}`);
+  console.log(`Protocol: AMP`);
+  console.log(`Agent: ${config.amp.agentAddress}`);
+  console.log(`Default agent: ${config.amp.defaultAgent}`);
+  console.log(`Tenant: ${config.amp.tenant}`);
+  console.log(`Maestro: ${config.amp.maestroUrl}`);
+  console.log(`Inbox: ${config.amp.inboxDir}`);
+  console.log(`State dir: ${config.whatsapp.stateDir}`);
+  console.log(`DM policy: ${config.whatsapp.dmPolicy}`);
+  console.log(`Allow from: ${config.whatsapp.allowFrom.length > 0 ? config.whatsapp.allowFrom.join(', ') : '(all)'}`);
+  console.log(`Debug: ${config.debug}`);
 
-  res.json({
-    status: status === 'connected' ? 'healthy' : 'degraded',
-    whatsapp: {
-      connection: status,
-      selfJid,
-    },
-    service: {
-      name: 'whatsapp-gateway',
-      version: '0.1.0',
-      uptime: process.uptime(),
-    },
-    aimaestro: {
-      url: config.aimaestro.apiUrl,
-      agent: config.aimaestro.botAgent,
-    },
+  // Express server for health checks and management
+  const app = express();
+  app.use(express.json());
+
+  app.get('/health', (_req, res) => {
+    const status = getStatus();
+    const selfJid = getSelfJid();
+
+    res.json({
+      status: status === 'connected' ? 'healthy' : 'degraded',
+      protocol: 'AMP',
+      whatsapp: {
+        connection: status,
+        selfJid,
+      },
+      service: {
+        name: 'whatsapp-gateway',
+        version: '0.2.0',
+        uptime: process.uptime(),
+      },
+      amp: {
+        agent: config.amp.agentAddress,
+        maestro: config.amp.maestroUrl,
+        tenant: config.amp.tenant,
+      },
+    });
   });
-});
 
-// Status (short)
-app.get('/status', (_req, res) => {
-  res.json({
-    connected: getStatus() === 'connected',
-    selfJid: getSelfJid(),
-    dmPolicy: config.whatsapp.dmPolicy,
+  app.get('/status', (_req, res) => {
+    res.json({
+      connected: getStatus() === 'connected',
+      selfJid: getSelfJid(),
+      dmPolicy: config.whatsapp.dmPolicy,
+    });
   });
-});
 
-// Auth middleware for management APIs
-app.use('/api', authMiddleware(config.adminToken));
+  app.use('/api', authMiddleware(config.adminToken));
+  app.use('/api/activity', createActivityRouter());
 
-// Activity log
-app.use('/api/activity', createActivityRouter());
+  const server = app.listen(config.port, '127.0.0.1', () => {
+    console.log(`[HTTP] Management API on http://127.0.0.1:${config.port}`);
+  });
 
-// Start the HTTP server
-app.listen(config.port, '127.0.0.1', () => {
-  console.log(`[HTTP] Management API on http://127.0.0.1:${config.port}`);
-});
+  console.log('');
+  console.log('Endpoints:');
+  console.log('  GET  /health        - Health check');
+  console.log('  GET  /status        - Connection status');
+  console.log('  GET  /api/activity  - Activity log');
+  console.log('========================================');
+  console.log('');
+  console.log('Gateway ready! (AMP Protocol)');
 
-// Start the WhatsApp session
-async function startup(): Promise<void> {
+  // Start the WhatsApp session
   try {
     console.log('[STARTUP] Connecting to WhatsApp...');
 
@@ -114,6 +123,9 @@ async function startup(): Promise<void> {
       console.log(`\n[SHUTDOWN] Received ${signal}, shutting down...`);
       stopPoller();
       await closeSession();
+      server.close(() => {
+        console.log('[SHUTDOWN] HTTP server closed');
+      });
       process.exit(0);
     };
 
@@ -126,4 +138,7 @@ async function startup(): Promise<void> {
   }
 }
 
-startup();
+main().catch((err) => {
+  console.error('Fatal error:', err);
+  process.exit(1);
+});

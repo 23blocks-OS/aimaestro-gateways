@@ -1,16 +1,17 @@
 /**
- * Config Management API
+ * Config Management API (AMP Protocol)
  *
  * GET/PATCH endpoints for gateway configuration.
  */
 
 import { Router, Request, Response } from 'express';
-import { GatewayConfig, RouteTarget, reloadRouting, getRoutingFilePath } from '../config.js';
-import { SecurityConfig } from '../content-security.js';
 import { readFile, writeFile } from 'fs/promises';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { stringify as yamlStringify } from 'yaml';
+import type { GatewayConfig, RouteTarget } from '../types.js';
+import { reloadRouting, getRoutingFilePath } from '../config.js';
+import type { SecurityConfig } from '../content-security.js';
 
 const __filename_local = fileURLToPath(import.meta.url);
 const __dirname_local = dirname(__filename_local);
@@ -23,18 +24,17 @@ export function createConfigRouter(
 ): Router {
   const router = Router();
 
-  /**
-   * GET /api/config — Overview (sanitized, no secrets)
-   */
   router.get('/', (req: Request, res: Response) => {
     const config = getConfig();
     res.json({
       port: config.port,
       debug: config.debug,
-      aimaestro: {
-        apiUrl: config.aimaestro.apiUrl,
-        botAgent: config.aimaestro.botAgent,
-        hostId: config.aimaestro.hostId,
+      protocol: 'AMP',
+      amp: {
+        agentAddress: config.amp.agentAddress,
+        maestroUrl: config.amp.maestroUrl,
+        defaultAgent: config.amp.defaultAgent,
+        tenant: config.amp.tenant,
       },
       mandrill: {
         configured: !!config.mandrill.apiKey,
@@ -50,16 +50,12 @@ export function createConfigRouter(
     });
   });
 
-  /**
-   * GET /api/config/routing — Full routing config
-   */
   router.get('/routing', async (req: Request, res: Response) => {
     const config = getConfig();
 
-    // Check if AI Maestro email index is reachable
     let emailIndexStatus = { available: false, lastError: '' };
     try {
-      const resp = await fetch(`${config.aimaestro.apiUrl}/api/agents/email-index`, {
+      const resp = await fetch(`${config.amp.maestroUrl}/api/agents/email-index`, {
         signal: AbortSignal.timeout(3000),
       });
       emailIndexStatus.available = resp.ok;
@@ -75,23 +71,17 @@ export function createConfigRouter(
     });
   });
 
-  /**
-   * PATCH /api/config/routing — Update routing rules
-   * Body: { routes?: Record<string, RouteTarget>, defaults?: Record<string, RouteTarget> }
-   */
   router.patch('/routing', async (req: Request, res: Response) => {
     if (!adminToken) {
-      return res.status(403).json({ error: 'ADMIN_TOKEN required for security configuration changes' });
+      return res.status(403).json({ error: 'ADMIN_TOKEN required for configuration changes' });
     }
 
     const config = getConfig();
     const { routes, defaults } = req.body;
 
-    // Merge updates
     const newRoutes = routes !== undefined ? routes : config.routing.routes;
     const newDefaults = defaults !== undefined ? defaults : config.routing.defaults;
 
-    // Write to routing.yaml (use empty object instead of null for YAML readability)
     const routingData: Record<string, unknown> = {};
     if (Object.keys(newRoutes).length > 0) {
       routingData.routes = newRoutes;
@@ -104,7 +94,6 @@ export function createConfigRouter(
     const yamlContent = yamlStringify(routingData, { indent: 2 });
     await writeFile(routingPath, yamlContent, 'utf-8');
 
-    // Hot-reload config
     reloadRouting(config);
 
     res.json({
@@ -114,9 +103,6 @@ export function createConfigRouter(
     });
   });
 
-  /**
-   * GET /api/config/security — Security settings
-   */
   router.get('/security', (req: Request, res: Response) => {
     const secConfig = getSecurityConfig();
     res.json({
@@ -124,10 +110,6 @@ export function createConfigRouter(
     });
   });
 
-  /**
-   * PATCH /api/config/security — Update operator whitelist
-   * Body: { operatorEmails: string[] }
-   */
   router.patch('/security', async (req: Request, res: Response) => {
     if (!adminToken) {
       return res.status(403).json({ error: 'ADMIN_TOKEN required for security configuration changes' });
@@ -141,30 +123,23 @@ export function createConfigRouter(
 
     const normalized = operatorEmails.map((e: string) => e.trim().toLowerCase()).filter(Boolean);
 
-    // Validate email format
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     const invalidEmails = normalized.filter((e: string) => !emailRegex.test(e));
     if (invalidEmails.length > 0) {
       return res.status(400).json({ error: `Invalid email address(es): ${invalidEmails.join(', ')}` });
     }
 
-    // Update in-memory config
     const newSecConfig: SecurityConfig = { operatorEmails: normalized };
     updateSecurityConfig(newSecConfig);
 
-    // Persist to .env
     await updateEnvVariable('OPERATOR_EMAILS', normalized.join(','));
 
     res.json({ ok: true, operatorEmails: normalized });
   });
 
-  /**
-   * GET /api/config/outbound — Outbound settings
-   */
   router.get('/outbound', async (req: Request, res: Response) => {
     const config = getConfig();
 
-    // Check Mandrill API reachability (cached for 30s)
     const now = Date.now();
     if (cachedMandrillReachable === null || now - lastMandrillCheck > HEALTH_CACHE_TTL_MS) {
       try {
@@ -192,17 +167,12 @@ export function createConfigRouter(
   return router;
 }
 
-// Mandrill health check cache
 let cachedMandrillReachable: boolean | null = null;
 let cachedMandrillLastError: string = '';
 let lastMandrillCheck = 0;
 const HEALTH_CACHE_TTL_MS = 30000;
 
-/**
- * Update a variable in the .env file.
- */
 async function updateEnvVariable(key: string, value: string): Promise<void> {
-  // Strip newlines to prevent .env injection
   value = value.replace(/[\r\n]/g, '');
   const envPath = resolve(__dirname_local, '..', '..', '.env');
   try {

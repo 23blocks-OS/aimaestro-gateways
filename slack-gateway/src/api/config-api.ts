@@ -1,5 +1,5 @@
 /**
- * Config Management API
+ * Config Management API (AMP Protocol)
  *
  * GET/PATCH endpoints for gateway configuration.
  */
@@ -30,11 +30,12 @@ export function createConfigRouter(
     res.json({
       port: config.port,
       debug: config.debug,
-      aimaestro: {
-        apiUrl: config.aimaestro.apiUrl,
-        botAgent: config.aimaestro.botAgent,
-        hostId: config.aimaestro.hostId,
-        defaultAgent: config.aimaestro.defaultAgent,
+      protocol: 'AMP',
+      amp: {
+        agentAddress: config.amp.agentAddress,
+        maestroUrl: config.amp.maestroUrl,
+        defaultAgent: config.amp.defaultAgent,
+        tenant: config.amp.tenant,
       },
       slack: {
         configured: !!config.slack.botToken,

@@ -1,14 +1,14 @@
 /**
- * Outbound WhatsApp - Baileys Send + AI Maestro Inbox Polling
+ * Outbound WhatsApp - Baileys Send + AMP Filesystem Inbox Polling
  *
- * Polls the gateway's AI Maestro inbox for outbound WhatsApp requests from agents,
- * then sends them via Baileys.
+ * Scans the gateway's AMP filesystem inbox for outbound WhatsApp requests,
+ * then sends them via Baileys. Sends confirmations via AMP route.
  *
- * Message format expected from agents:
+ * Message format expected from agents (in AMP envelope payload):
  * {
- *   subject: "[WHATSAPP-SEND]" or any subject,
- *   content: {
- *     type: "whatsappSend",
+ *   type: "whatsappSend",
+ *   message: "Human-readable description",
+ *   context: {
  *     whatsappSend: {
  *       to: "+1234567890",
  *       message: "Hello!",
@@ -18,105 +18,64 @@
  * }
  */
 
-import type { GatewayConfig, WhatsAppSendPayload } from './types.js';
+import * as fs from 'fs';
+import * as path from 'path';
+import type { GatewayConfig, WhatsAppSendPayload, AMPMessage, AMPRouteRequest } from './types.js';
 import { getSocket, getStatus } from './session.js';
-import { normalizeTarget, phoneToJid } from './normalize.js';
+import { normalizeTarget } from './normalize.js';
 import { logEvent } from './api/activity-log.js';
 
 /**
- * Fetch unread messages from the gateway's AI Maestro inbox.
- */
-async function fetchInbox(config: GatewayConfig): Promise<any[]> {
-  const url = `${config.aimaestro.apiUrl}/api/messages?agent=${config.aimaestro.botAgent}&box=inbox&status=unread`;
-
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(10000),
-  });
-
-  if (!response.ok) {
-    throw new Error(`AI Maestro inbox fetch failed: ${response.status}`);
-  }
-
-  const data = await response.json() as any;
-  return data.messages || [];
-}
-
-/**
- * Fetch full message details by ID.
- */
-async function fetchMessage(config: GatewayConfig, messageId: string): Promise<any> {
-  const url = `${config.aimaestro.apiUrl}/api/messages?agent=${config.aimaestro.botAgent}&id=${encodeURIComponent(messageId)}&box=inbox`;
-
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(10000),
-  });
-
-  if (!response.ok) {
-    throw new Error(`AI Maestro message fetch failed: ${response.status}`);
-  }
-
-  return response.json();
-}
-
-/**
- * Mark a message as read in AI Maestro.
- */
-async function markAsRead(config: GatewayConfig, messageId: string): Promise<void> {
-  const url = `${config.aimaestro.apiUrl}/api/messages?agent=${config.aimaestro.botAgent}&id=${encodeURIComponent(messageId)}&action=read`;
-
-  await fetch(url, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    signal: AbortSignal.timeout(10000),
-  });
-}
-
-/**
- * Send a confirmation message back to the requesting agent.
+ * Send a confirmation message back to the requesting agent via AMP route.
  */
 async function sendConfirmation(
   config: GatewayConfig,
-  toAgent: string,
-  toHost: string,
+  toAddress: string,
   subject: string,
   message: string
 ): Promise<void> {
-  const payload = {
-    from: config.aimaestro.botAgent,
-    fromHost: config.aimaestro.hostId,
-    to: toAgent,
-    toHost: toHost,
+  const ampRequest: AMPRouteRequest = {
+    to: toAddress,
     subject,
     priority: 'low',
-    content: {
+    payload: {
       type: 'notification',
       message,
     },
   };
 
-  await fetch(`${config.aimaestro.apiUrl}/api/messages`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(10000),
-  });
+  try {
+    await fetch(`${config.amp.maestroUrl}/api/v1/route`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${config.amp.apiKey}`,
+      },
+      body: JSON.stringify(ampRequest),
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch (err) {
+    console.error('[OUTBOUND] Failed to send confirmation:', (err as Error).message);
+  }
 }
 
 /**
- * Check if a message is an outbound WhatsApp request.
+ * Check if an AMP message is an outbound WhatsApp request.
  */
-function isWhatsAppSendMessage(msg: any): boolean {
-  if (msg.subject?.startsWith('[WHATSAPP-SEND]')) return true;
-  if (msg.content?.type === 'whatsappSend') return true;
-  if (msg.content?.whatsappSend) return true;
+function isWhatsAppSendMessage(msg: AMPMessage): boolean {
+  const subject = msg.envelope?.subject || '';
+  if (subject.startsWith('[WHATSAPP-SEND]')) return true;
+  const payloadType = msg.payload?.type;
+  if (payloadType === 'whatsappSend') return true;
+  if (msg.payload?.context?.whatsappSend) return true;
   return false;
 }
 
 /**
- * Extract the WhatsApp send payload from an AI Maestro message.
+ * Extract the WhatsApp send payload from an AMP message.
  */
-function extractSendPayload(msg: any): WhatsAppSendPayload | null {
-  const send = msg.content?.whatsappSend;
+function extractSendPayload(msg: AMPMessage): WhatsAppSendPayload | null {
+  const send = msg.payload?.context?.whatsappSend;
   if (!send) return null;
 
   if (!send.to || !send.message) {
@@ -134,7 +93,6 @@ function extractSendPayload(msg: any): WhatsAppSendPayload | null {
 
 /**
  * Send a text message via Baileys.
- * Chunks long messages to respect WhatsApp's limits.
  */
 async function sendViaWhatsApp(
   payload: WhatsAppSendPayload,
@@ -154,14 +112,12 @@ async function sendViaWhatsApp(
     return { success: false, error: `Invalid target: ${payload.to}` };
   }
 
-  // Chunk long messages
   const chunks = chunkText(payload.message, config.whatsapp.textChunkLimit);
 
   try {
     for (let i = 0; i < chunks.length; i++) {
       const msgContent: any = { text: chunks[i] };
 
-      // Quote only on the first chunk
       if (i === 0 && payload.quotedMessageId) {
         msgContent.quoted = {
           key: {
@@ -180,9 +136,6 @@ async function sendViaWhatsApp(
   }
 }
 
-/**
- * Chunk text into segments that fit WhatsApp's limits.
- */
 function chunkText(text: string, limit: number): string[] {
   if (text.length <= limit) return [text];
 
@@ -195,14 +148,11 @@ function chunkText(text: string, limit: number): string[] {
       break;
     }
 
-    // Try to break at a newline
     let breakPoint = remaining.lastIndexOf('\n', limit);
     if (breakPoint < limit * 0.5) {
-      // Try to break at a space
       breakPoint = remaining.lastIndexOf(' ', limit);
     }
     if (breakPoint < limit * 0.3) {
-      // Hard break
       breakPoint = limit;
     }
 
@@ -213,152 +163,126 @@ function chunkText(text: string, limit: number): string[] {
   return chunks;
 }
 
-// Track in-flight messages to prevent duplicate sends
-const inFlightMessages = new Set<string>();
-
 /**
- * Process a single outbound WhatsApp request.
+ * Scan the AMP filesystem inbox for outbound WhatsApp requests.
  */
-async function processOutboundMessage(config: GatewayConfig, msgSummary: any): Promise<void> {
-  const messageId = msgSummary.id;
-  const fromAgent = msgSummary.from;
-  const fromHost = msgSummary.fromHost || config.aimaestro.hostId;
+async function scanInbox(config: GatewayConfig): Promise<void> {
+  const inboxDir = config.amp.inboxDir;
+  if (!inboxDir || !fs.existsSync(inboxDir)) return;
 
-  if (inFlightMessages.has(messageId)) return;
-  inFlightMessages.add(messageId);
-
-  console.log(`[OUTBOUND] Processing WhatsApp request from ${fromAgent}: ${msgSummary.subject}`);
-
+  let senderDirs: string[];
   try {
-    // Mark as read immediately
-    await markAsRead(config, messageId);
-
-    // Fetch full message
-    const fullMsg = await fetchMessage(config, messageId);
-
-    const payload = extractSendPayload(fullMsg);
-    if (!payload) {
-      console.error(`[OUTBOUND] Could not extract send payload from message ${messageId}`);
-      inFlightMessages.delete(messageId);
-      return;
-    }
-
-    console.log(`[OUTBOUND] Sending to ${payload.to}: ${payload.message.slice(0, 80)}`);
-
-    // Send via Baileys
-    const result = await sendViaWhatsApp(payload, config);
-
-    if (result.success) {
-      console.log(`[OUTBOUND] Sent successfully to ${payload.to}`);
-
-      logEvent('outbound', `WhatsApp sent to ${payload.to}`, {
-        from: fromAgent,
-        to: payload.to,
-        subject: payload.message.slice(0, 80),
-      });
-
-      await sendConfirmation(
-        config,
-        fromAgent,
-        fromHost,
-        `[WHATSAPP-SENT] To: ${payload.to}`,
-        `WhatsApp message sent to ${payload.to}\nPreview: ${payload.message.slice(0, 100)}`
-      );
-    } else {
-      console.error(`[OUTBOUND] Send failed: ${result.error}`);
-
-      logEvent('error', `WhatsApp send failed to ${payload.to}: ${result.error}`, {
-        from: fromAgent,
-        to: payload.to,
-        error: result.error,
-      });
-
-      await sendConfirmation(
-        config,
-        fromAgent,
-        fromHost,
-        `[WHATSAPP-FAILED] To: ${payload.to}`,
-        `Failed to send WhatsApp to ${payload.to}\nError: ${result.error}`
-      );
-    }
-  } catch (err) {
-    console.error(`[OUTBOUND] Error processing message ${messageId}:`, err);
-  } finally {
-    inFlightMessages.delete(messageId);
+    senderDirs = fs.readdirSync(inboxDir).filter(d => {
+      const full = path.join(inboxDir, d);
+      return fs.statSync(full).isDirectory();
+    });
+  } catch {
+    return;
   }
-}
 
-/**
- * Poll the inbox once and process any outbound WhatsApp requests.
- */
-async function pollOnce(config: GatewayConfig): Promise<void> {
-  try {
-    const messages = await fetchInbox(config);
-    const waRequests = messages.filter(isWhatsAppSendMessage);
-
-    if (waRequests.length > 0) {
-      console.log(`[OUTBOUND] Found ${waRequests.length} outbound WhatsApp request(s)`);
+  for (const senderDir of senderDirs) {
+    const senderPath = path.join(inboxDir, senderDir);
+    let files: string[];
+    try {
+      files = fs.readdirSync(senderPath).filter(f => f.endsWith('.json'));
+    } catch {
+      continue;
     }
 
-    const BATCH_SIZE = 5;
-    for (let i = 0; i < waRequests.length; i += BATCH_SIZE) {
-      const batch = waRequests.slice(i, i + BATCH_SIZE);
-      await Promise.allSettled(batch.map(msg => processOutboundMessage(config, msg)));
+    for (const file of files) {
+      const filePath = path.join(senderPath, file);
+      let msg: AMPMessage;
+      try {
+        msg = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      } catch {
+        console.error(`[OUTBOUND] Failed to parse ${filePath}`);
+        continue;
+      }
+
+      const fromAddress = msg.envelope?.from || senderDir;
+
+      if (isWhatsAppSendMessage(msg)) {
+        const payload = extractSendPayload(msg);
+        if (!payload) {
+          console.error(`[OUTBOUND] Could not extract send payload from ${filePath}`);
+          try { fs.unlinkSync(filePath); } catch {}
+          continue;
+        }
+
+        console.log(`[OUTBOUND] Sending to ${payload.to}: ${payload.message.slice(0, 80)}`);
+
+        const result = await sendViaWhatsApp(payload, config);
+
+        if (result.success) {
+          console.log(`[OUTBOUND] Sent successfully to ${payload.to}`);
+
+          logEvent('outbound', `WhatsApp sent to ${payload.to}`, {
+            from: fromAddress,
+            to: payload.to,
+            subject: payload.message.slice(0, 80),
+            ampMessageId: msg.envelope?.id,
+            deliveryStatus: 'sent',
+          });
+
+          await sendConfirmation(
+            config,
+            fromAddress,
+            `[WHATSAPP-SENT] To: ${payload.to}`,
+            `WhatsApp message sent to ${payload.to}\nPreview: ${payload.message.slice(0, 100)}`
+          );
+        } else {
+          console.error(`[OUTBOUND] Send failed: ${result.error}`);
+
+          logEvent('error', `WhatsApp send failed to ${payload.to}: ${result.error}`, {
+            from: fromAddress,
+            to: payload.to,
+            error: result.error,
+          });
+
+          await sendConfirmation(
+            config,
+            fromAddress,
+            `[WHATSAPP-FAILED] To: ${payload.to}`,
+            `Failed to send WhatsApp to ${payload.to}\nError: ${result.error}`
+          );
+        }
+      }
+
+      // Delete processed message file
+      try {
+        fs.unlinkSync(filePath);
+      } catch {}
     }
-  } catch (err) {
-    console.error('[OUTBOUND] Poll error:', (err as Error).message);
+
+    // Clean up empty sender directories
+    try {
+      const remaining = fs.readdirSync(senderPath);
+      if (remaining.length === 0) {
+        fs.rmdirSync(senderPath);
+      }
+    } catch {}
   }
 }
 
 /**
  * Start the outbound polling loop.
- * Uses setTimeout chain to prevent overlapping polls.
- * Returns a cleanup function to stop polling.
+ * Scans the AMP filesystem inbox for WhatsApp requests.
  */
 export function startOutboundPoller(config: GatewayConfig): () => void {
-  let isPolling = false;
   let pollTimeoutId: NodeJS.Timeout | null = null;
-  let currentIntervalMs = config.outbound.pollIntervalMs;
-  const MAX_INTERVAL_MS = 30000; // WhatsApp base is 5s, cap at 30s
-  const BACKOFF_MULTIPLIER = 1.5;
 
   const poll = async () => {
-    if (isPolling) return;
-    isPolling = true;
-
-    let foundMessages = false;
     try {
-      const messages = await fetchInbox(config);
-      const waRequests = messages.filter(isWhatsAppSendMessage);
-
-      if (waRequests.length > 0) {
-        foundMessages = true;
-        console.log(`[OUTBOUND] Found ${waRequests.length} outbound WhatsApp request(s)`);
-
-        const BATCH_SIZE = 5;
-        for (let i = 0; i < waRequests.length; i += BATCH_SIZE) {
-          const batch = waRequests.slice(i, i + BATCH_SIZE);
-          await Promise.allSettled(batch.map(msg => processOutboundMessage(config, msg)));
-        }
-      }
+      await scanInbox(config);
     } catch (err) {
       console.error('[OUTBOUND] Poll error:', (err as Error).message);
-    } finally {
-      isPolling = false;
     }
-
-    if (foundMessages) {
-      currentIntervalMs = config.outbound.pollIntervalMs;
-    } else {
-      currentIntervalMs = Math.min(currentIntervalMs * BACKOFF_MULTIPLIER, MAX_INTERVAL_MS);
-    }
-
-    pollTimeoutId = setTimeout(poll, currentIntervalMs);
+    pollTimeoutId = setTimeout(poll, config.outbound.pollIntervalMs);
   };
 
   // Initial poll after short delay
   pollTimeoutId = setTimeout(poll, 3000);
-  console.log(`[OUTBOUND] Starting poller (interval: ${config.outbound.pollIntervalMs}ms)`);
+  console.log(`[OUTBOUND] Starting filesystem poller (interval: ${config.outbound.pollIntervalMs}ms)`);
 
   return () => {
     if (pollTimeoutId) {

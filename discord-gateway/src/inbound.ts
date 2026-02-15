@@ -1,24 +1,26 @@
 /**
- * Discord Gateway - Inbound Message Handlers
+ * Discord Gateway - Inbound Message Handlers (AMP Protocol)
  *
  * Registers Discord event handlers (messageCreate) and routes messages
- * to AI Maestro agents via content security scanning.
+ * to agents via AMP POST /api/v1/route.
  */
 
 import type { Client, Message, TextChannel } from 'discord.js';
-import type { GatewayConfig } from './types.js';
+import type { GatewayConfig, AMPRouteRequest } from './types.js';
 import type { AgentResolver } from './agent-resolver.js';
+import type { ThreadStore } from './thread-store.js';
 import { sanitizeDiscordMessage, type SecurityConfig } from './content-security.js';
 import { logEvent } from './api/activity-log.js';
 
 /**
  * Parse @AIM:agent-name routing from message text.
+ * Allows full AMP addresses like @AIM:agent@tenant.domain
  */
 function parseAgentRouting(
   text: string,
   defaultAgent: string
 ): { agent: string; message: string } {
-  const match = text.match(/@AIM:([a-zA-Z0-9_-]+)/i);
+  const match = text.match(/@AIM:([a-zA-Z0-9_@.\-]+)/i);
 
   if (match) {
     const message = text
@@ -41,25 +43,24 @@ function parseAgentRouting(
 
 /**
  * Remove bot mention from message text.
- * Discord mentions look like <@BOT_ID> in message content.
  */
 function stripBotMention(text: string, botId: string): string {
   return text.replace(new RegExp(`<@!?${botId}>`, 'g'), '').trim();
 }
 
 /**
- * Send a message to an AI Maestro agent.
+ * Send a message to an agent via AMP route API.
  */
 async function sendToAgent(
   config: GatewayConfig,
-  targetAgent: string,
-  targetHost: string,
+  targetAddress: string,
   text: string,
   channelId: string,
   messageId: string,
   displayName: string,
   discordUserId: string,
-  securityConfig: SecurityConfig
+  securityConfig: SecurityConfig,
+  threadStore: ThreadStore
 ): Promise<void> {
   const { sanitized, trust, flags } = sanitizeDiscordMessage(
     text,
@@ -74,65 +75,97 @@ async function sendToAgent(
     );
     logEvent('security', `Injection patterns flagged from ${displayName}`, {
       from: displayName,
-      to: targetAgent,
+      to: targetAddress,
       subject: text.substring(0, 80),
       securityFlags: flags.map((f) => `${f.category}: ${f.match}`),
     });
   }
 
-  const payload = {
-    from: config.aimaestro.botAgent,
-    fromHost: config.aimaestro.hostId,
-    to: targetAgent,
-    toHost: targetHost,
-    subject: `Discord: Message from ${displayName}`,
+  const ampRequest: AMPRouteRequest = {
+    to: targetAddress,
+    subject: `Discord message from ${displayName}`,
     priority: 'normal',
-    content: {
+    payload: {
       type: 'request',
       message: sanitized,
-      discord: {
-        channelId,
-        messageId,
-        user: displayName,
-      },
-      security: {
-        trust: trust.level,
-        trustReason: trust.reason,
-        injectionFlags: flags.length > 0 ? flags : undefined,
+      context: {
+        channel: {
+          type: 'discord',
+          sender: displayName,
+          sender_id: discordUserId,
+          thread_id: channelId,
+          bridge_agent: config.amp.agentAddress,
+          received_at: new Date().toISOString(),
+        },
+        discord: { channelId, messageId, user: displayName },
+        security: {
+          trust: trust.level,
+          source: 'discord',
+          scanned: true,
+          injection_flags: flags.map((f) => f.category),
+          wrapped: trust.level !== 'operator',
+          scanned_at: new Date().toISOString(),
+        },
       },
     },
   };
 
-  const response = await fetch(`${config.aimaestro.apiUrl}/api/messages`, {
+  const response = await fetch(`${config.amp.maestroUrl}/api/v1/route`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.amp.apiKey}`,
+    },
+    body: JSON.stringify(ampRequest),
     signal: AbortSignal.timeout(config.polling.timeoutMs),
   });
 
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to send to ${targetAgent}: ${error}`);
+    const errorBody = await response.text().catch(() => '');
+    if (response.status === 404) {
+      throw new Error(`agent_not_found: ${targetAddress}`);
+    }
+    if (response.status === 429) {
+      throw new Error(`rate_limited: ${targetAddress}`);
+    }
+    throw new Error(`AMP route failed (${response.status}): ${errorBody}`);
   }
 
+  const result = await response.json();
+
+  if (result.id) {
+    threadStore.set(result.id, {
+      channelId,
+      messageId,
+      user: discordUserId,
+      userName: displayName,
+      ampMessageId: result.id,
+      createdAt: Date.now(),
+    });
+  }
+
+  const agentName = targetAddress.split('@')[0];
   console.log(
-    `[-> ${targetAgent}@${targetHost}] Message from ${displayName} (trust: ${trust.level}): ${text.substring(0, 50)}...`
+    `[-> ${targetAddress}] Message from ${displayName} (trust: ${trust.level}): ${text.substring(0, 50)}...`
   );
 
-  logEvent('inbound', `Discord message routed: ${displayName} -> ${targetAgent}`, {
+  logEvent('inbound', `Discord message routed: ${displayName} -> ${agentName}`, {
     from: displayName,
-    to: targetAgent,
+    to: targetAddress,
     subject: text.substring(0, 80),
+    ampMessageId: result.id,
+    deliveryStatus: result.status,
   });
 }
 
 /**
- * Route a Discord message to the appropriate AI Maestro agent.
+ * Route a Discord message to the appropriate agent via AMP.
  */
 async function routeMessage(
   config: GatewayConfig,
   resolver: AgentResolver,
   securityConfig: SecurityConfig,
+  threadStore: ThreadStore,
   text: string,
   channelId: string,
   messageId: string,
@@ -140,41 +173,39 @@ async function routeMessage(
   discordUserId: string,
   reply: (text: string) => Promise<void>
 ): Promise<void> {
-  const { agent, message } = parseAgentRouting(text, config.aimaestro.defaultAgent);
-  const result = await resolver.lookupAgentSmart(agent);
+  const { agent, message } = parseAgentRouting(text, config.amp.defaultAgent);
+  const { address } = resolver.lookupAgent(agent);
 
-  if (result.status === 'not_found') {
-    await reply(
-      `Agent \`${agent}\` not found on any host.\n\nUse \`@AIM:agent-name message\` to route to a specific agent.`
+  try {
+    await sendToAgent(
+      config,
+      address,
+      message,
+      channelId,
+      messageId,
+      displayName,
+      discordUserId,
+      securityConfig,
+      threadStore
     );
-    logEvent('error', `Agent not found: ${agent}`, { from: displayName, to: agent });
-    return;
-  }
+  } catch (error) {
+    const errMsg = (error as Error).message;
 
-  if (result.status === 'multiple') {
-    const matchList = result.matches.map((m) => `- \`${m.alias}@${m.hostId}\``).join('\n');
-    await reply(
-      `Found multiple matches for \`${agent}\`:\n\n${matchList}\n\nPlease specify the full agent name, e.g.:\n\`@AIM:${result.matches[0].alias}@${result.matches[0].hostId} your message\``
-    );
-    return;
-  }
+    if (errMsg.startsWith('agent_not_found:')) {
+      await reply(
+        `Agent \`${agent}\` not found.\n\nUse \`@AIM:agent-name message\` to route to a specific agent.`
+      );
+      logEvent('error', `Agent not found: ${agent}`, { from: displayName, to: agent });
+      return;
+    }
 
-  // Found exactly one match
-  if (result.fuzzy) {
-    await reply(`Found partial match: \`${result.name}@${result.host}\``);
-  }
+    if (errMsg.startsWith('rate_limited:')) {
+      await reply(`Agent \`${agent}\` is rate limited. Please try again in a moment.`);
+      return;
+    }
 
-  await sendToAgent(
-    config,
-    result.name,
-    result.host,
-    message,
-    channelId,
-    messageId,
-    displayName,
-    discordUserId,
-    securityConfig
-  );
+    throw error;
+  }
 }
 
 /**
@@ -184,22 +215,20 @@ export function registerInboundHandlers(
   client: Client,
   config: GatewayConfig,
   resolver: AgentResolver,
-  securityConfig: SecurityConfig
+  securityConfig: SecurityConfig,
+  threadStore: ThreadStore
 ): void {
   client.on('messageCreate', async (message: Message) => {
-    // Ignore bot messages (prevent loops)
     if (message.author.bot) return;
 
     const isDM = !message.guild;
     const isMentioned = message.mentions.has(client.user!);
 
-    // Only respond to DMs or messages where bot is @mentioned
     if (!isDM && !isMentioned) return;
 
     const displayName = message.author.displayName || message.author.username;
     let text = message.content;
 
-    // Strip bot mention from channel messages
     if (isMentioned && client.user) {
       text = stripBotMention(text, client.user.id);
     }
@@ -210,10 +239,8 @@ export function registerInboundHandlers(
     console.log(`[Discord <-] ${source} from ${displayName}: ${text.substring(0, 50)}...`);
 
     try {
-      // Add eyes reaction
       await message.react('\u{1F440}').catch(() => {});
 
-      // Show typing indicator
       if ('sendTyping' in message.channel) {
         await message.channel.sendTyping().catch(() => {});
       }
@@ -226,6 +253,7 @@ export function registerInboundHandlers(
         config,
         resolver,
         securityConfig,
+        threadStore,
         text,
         message.channelId,
         message.id,

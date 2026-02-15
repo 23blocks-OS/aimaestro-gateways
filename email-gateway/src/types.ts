@@ -1,5 +1,5 @@
 /**
- * WhatsApp Gateway - Type Definitions (AMP Protocol)
+ * Email Gateway - Type Definitions (AMP Protocol)
  */
 
 // ---------------------------------------------------------------------------
@@ -57,10 +57,6 @@ export interface AMPRouteResponse {
 // Gateway Config
 // ---------------------------------------------------------------------------
 
-export interface RouteTarget {
-  agent: string;
-}
-
 export interface GatewayConfig {
   port: number;
   debug: boolean;
@@ -72,52 +68,24 @@ export interface GatewayConfig {
     tenant: string;
     inboxDir: string;
   };
-  whatsapp: {
-    stateDir: string;
-    allowFrom: string[];
-    dmPolicy: 'allowlist' | 'open' | 'disabled';
-    sendReadReceipts: boolean;
-    textChunkLimit: number;
+  mandrill: {
+    apiKey: string;
+    webhookKeys: Record<string, string>;
   };
   routing: {
-    phones: Record<string, RouteTarget>;
-    default: RouteTarget;
+    routes: Record<string, RouteTarget>;
+    defaults: Record<string, RouteTarget>;
   };
   outbound: {
     pollIntervalMs: number;
   };
-  operatorPhones: string[];
+  storage: {
+    attachmentsPath: string;
+  };
   adminToken: string;
+  emailBaseDomain: string;
 }
 
-// ---------------------------------------------------------------------------
-// WhatsApp Message Types
-// ---------------------------------------------------------------------------
-
-export interface WhatsAppInboundMessage {
-  from: string;
-  fromName: string;
-  chatJid: string;
-  messageId: string;
-  isGroup: boolean;
-  groupJid: string | null;
-  groupName: string | null;
-  textBody: string;
-  quotedMessage: QuotedMessage | null;
-  hasMedia: boolean;
-  mediaType: string | null;
-  timestamp: string;
-}
-
-export interface QuotedMessage {
-  id: string;
-  sender: string;
-  body: string;
-}
-
-export interface WhatsAppSendPayload {
-  to: string;
-  message: string;
-  quotedMessageId?: string;
-  accountId?: string;
+export interface RouteTarget {
+  agent: string;
 }

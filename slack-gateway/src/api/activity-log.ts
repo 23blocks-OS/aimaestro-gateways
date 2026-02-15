@@ -20,6 +20,8 @@ export interface ActivityEvent {
     routeMatch?: string;
     securityFlags?: string[];
     error?: string;
+    ampMessageId?: string;
+    deliveryStatus?: string;
   };
 }
 

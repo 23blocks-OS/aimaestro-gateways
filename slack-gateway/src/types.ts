@@ -1,6 +1,10 @@
 /**
- * Slack Gateway - Type Definitions
+ * Slack Gateway - Type Definitions (AMP Protocol)
  */
+
+// ---------------------------------------------------------------------------
+// Gateway Configuration
+// ---------------------------------------------------------------------------
 
 export interface GatewayConfig {
   port: number;
@@ -9,15 +13,16 @@ export interface GatewayConfig {
     appToken: string;
     signingSecret: string;
   };
-  aimaestro: {
-    apiUrl: string;
+  amp: {
+    apiKey: string;
+    agentAddress: string;
+    maestroUrl: string;
     defaultAgent: string;
-    botAgent: string;
-    hostId: string;
+    tenant: string;
+    inboxDir: string;
   };
   cache: {
     agentTtlMs: number;
-    hostsTtlMs: number;
     slackUserTtlMs: number;
   };
   polling: {
@@ -28,69 +33,84 @@ export interface GatewayConfig {
   adminToken: string;
 }
 
-export interface Host {
-  id: string;
-  url: string;
-  enabled: boolean;
-}
+// ---------------------------------------------------------------------------
+// AMP Protocol Types
+// ---------------------------------------------------------------------------
 
-export interface ResolvedAgent {
-  agentId: string;
-  alias: string;
-  displayName?: string;
-}
-
-export interface AgentCacheEntry {
-  agentId: string;
-  alias: string;
-  displayName?: string;
-  host: string;
-  hostUrl: string;
-  cachedAt: number;
-}
-
-export interface HostsCacheEntry {
-  hosts: Host[];
-  cachedAt: number;
-}
-
-export type LookupResult =
-  | { status: 'found'; name: string; host: string; hostUrl: string; displayName?: string; fuzzy?: boolean }
-  | { status: 'multiple'; matches: Array<{ alias: string; hostId: string }> }
-  | { status: 'not_found' };
-
-export interface AIMessage {
+export interface AMPEnvelope {
+  version: string;
   id: string;
   from: string;
-  fromAlias?: string;
+  to: string;
   subject: string;
-  content?: {
-    type?: string;
-    message?: string;
-    slack?: {
-      channel: string;
-      thread_ts: string;
-      user: string;
-    };
+  priority: 'urgent' | 'high' | 'normal' | 'low';
+  timestamp: string;
+  signature: string | null;
+  in_reply_to?: string | null;
+  thread_id?: string;
+  expires_at?: string | null;
+}
+
+export interface AMPPayload {
+  type: string;
+  message: string;
+  context?: Record<string, unknown> | null;
+}
+
+export interface AMPMessage {
+  envelope: AMPEnvelope;
+  payload: AMPPayload;
+  metadata?: {
+    status?: string;
+    queued_at?: string;
+    delivery_attempts?: number;
+  };
+  local?: {
+    received_at?: string;
+    delivery_method?: string;
+    status?: string;
   };
 }
 
-export interface AIMessagesResponse {
-  messages?: AIMessage[];
-}
-
-export interface AIResolveResponse {
-  resolved?: {
-    agentId: string;
-    alias?: string;
-    displayName?: string;
+export interface AMPRouteRequest {
+  to: string;
+  subject: string;
+  priority?: 'urgent' | 'high' | 'normal' | 'low';
+  in_reply_to?: string | null;
+  payload: {
+    type: string;
+    message: string;
+    context?: Record<string, unknown>;
   };
 }
 
-export interface AISearchResponse {
-  results?: Array<{ alias: string; agentId: string; displayName?: string }>;
+export interface AMPRouteResponse {
+  id: string;
+  status: 'delivered' | 'queued' | 'failed';
+  method?: string;
+  delivered_at?: string;
+  error?: string;
+  message?: string;
 }
 
-export interface AIHostsResponse {
-  hosts?: Host[];
+// ---------------------------------------------------------------------------
+// Thread Context (maps AMP message IDs to Slack threads)
+// ---------------------------------------------------------------------------
+
+export interface ThreadContext {
+  channel: string;
+  thread_ts: string;
+  user: string;
+  userName: string;
+  ampMessageId: string;
+  createdAt: number;
+}
+
+// ---------------------------------------------------------------------------
+// Agent Resolution (simplified for AMP)
+// ---------------------------------------------------------------------------
+
+export interface LookupResult {
+  address: string;
+  displayName: string;
 }

@@ -1,5 +1,5 @@
 /**
- * Config Management API
+ * Config Management API (AMP Protocol)
  *
  * GET/PATCH endpoints for gateway configuration.
  */
@@ -22,19 +22,17 @@ export function createConfigRouter(
 ): Router {
   const router = Router();
 
-  /**
-   * GET /api/config — Overview (sanitized, no tokens)
-   */
   router.get('/', (req: Request, res: Response) => {
     const config = getConfig();
     res.json({
       port: config.port,
       debug: config.debug,
-      aimaestro: {
-        apiUrl: config.aimaestro.apiUrl,
-        botAgent: config.aimaestro.botAgent,
-        hostId: config.aimaestro.hostId,
-        defaultAgent: config.aimaestro.defaultAgent,
+      protocol: 'AMP',
+      amp: {
+        agentAddress: config.amp.agentAddress,
+        maestroUrl: config.amp.maestroUrl,
+        defaultAgent: config.amp.defaultAgent,
+        tenant: config.amp.tenant,
       },
       discord: {
         configured: !!config.discord.botToken,
@@ -44,9 +42,6 @@ export function createConfigRouter(
     });
   });
 
-  /**
-   * GET /api/config/security — Security settings
-   */
   router.get('/security', (req: Request, res: Response) => {
     const secConfig = getSecurityConfig();
     res.json({
@@ -54,10 +49,6 @@ export function createConfigRouter(
     });
   });
 
-  /**
-   * PATCH /api/config/security — Update operator whitelist
-   * Body: { operatorDiscordIds: string[] }
-   */
   router.patch('/security', async (req: Request, res: Response) => {
     if (!adminToken) {
       return res.status(403).json({ error: 'ADMIN_TOKEN required for security configuration changes' });
@@ -71,7 +62,6 @@ export function createConfigRouter(
 
     const normalized = operatorDiscordIds.map((id: string) => id.trim()).filter(Boolean);
 
-    // Validate Discord IDs (must be numeric snowflake IDs)
     const invalidIds = normalized.filter((id: string) => !/^\d+$/.test(id));
     if (invalidIds.length > 0) {
       return res.status(400).json({ error: `Invalid Discord ID(s): ${invalidIds.join(', ')}. Discord IDs must be numeric.` });
@@ -80,7 +70,6 @@ export function createConfigRouter(
     const newSecConfig: SecurityConfig = { operatorDiscordIds: normalized };
     updateSecurityConfig(newSecConfig);
 
-    // Persist to .env
     await updateEnvVariable('OPERATOR_DISCORD_IDS', normalized.join(','));
 
     res.json({ ok: true, operatorDiscordIds: normalized });
@@ -89,11 +78,7 @@ export function createConfigRouter(
   return router;
 }
 
-/**
- * Update a variable in the .env file.
- */
 async function updateEnvVariable(key: string, value: string): Promise<void> {
-  // Strip newlines to prevent .env injection
   value = value.replace(/[\r\n]/g, '');
   const envPath = resolve(__dirname_local, '..', '..', '.env');
   try {

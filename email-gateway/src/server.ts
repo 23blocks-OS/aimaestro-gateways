@@ -1,9 +1,9 @@
 /**
- * AI Maestro - Email Gateway
+ * AI Maestro - Email Gateway (AMP Protocol)
  *
- * Receives Mandrill inbound webhooks and routes emails to AI Maestro agents.
- * Polls for outbound email requests and sends via Mandrill API.
- * Serves management UI as a static SPA.
+ * Receives Mandrill inbound webhooks and routes emails to AI Maestro agents
+ * via AMP protocol. Polls filesystem inbox for outbound email requests and
+ * sends via Mandrill API. Serves management UI as a static SPA.
  *
  * URL pattern: https://email.{tenant}.{EMAIL_BASE_DOMAIN}/inbound
  */
@@ -13,33 +13,19 @@ import crypto, { timingSafeEqual } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { loadConfig, GatewayConfig } from './config.js';
+import { loadConfig } from './config.js';
 import { resolveRoute } from './router.js';
 import { startOutboundPoller } from './outbound.js';
-import { loadSecurityConfig, sanitizeEmail, SecurityConfig, EmailAuthResult } from './content-security.js';
+import { loadSecurityConfig, sanitizeEmail, type SecurityConfig, type EmailAuthResult } from './content-security.js';
 import { logEvent } from './api/activity-log.js';
 import { createConfigRouter } from './api/config-api.js';
 import { createActivityRouter } from './api/activity-api.js';
 import { createStatsRouter } from './api/stats-api.js';
+import type { GatewayConfig, AMPRouteRequest, AMPRouteResponse } from './types.js';
 
 const __filename_local = fileURLToPath(import.meta.url);
 const __dirname_local = path.dirname(__filename_local);
 
-// Load config (exits on failure)
-let config: GatewayConfig;
-let securityConfig: SecurityConfig;
-try {
-  config = loadConfig();
-  securityConfig = loadSecurityConfig();
-} catch (err) {
-  console.error('[FATAL] Failed to load config:', err);
-  process.exit(1);
-}
-
-/**
- * Bearer token authentication middleware for management API routes.
- * If ADMIN_TOKEN is not set, access is allowed (backwards compatibility).
- */
 function authMiddleware(adminToken: string) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!adminToken) {
@@ -55,14 +41,8 @@ function authMiddleware(adminToken: string) {
   };
 }
 
-const app = express();
-
-// Allowed tenants (derived from webhook keys)
-const ALLOWED_TENANTS = new Set(Object.keys(config.mandrill.webhookKeys));
-
 /**
  * Verify Mandrill webhook signature
- * https://mailchimp.com/developer/transactional/docs/webhooks/#authenticating-webhook-requests
  */
 function verifyMandrillSignature(
   webhookKey: string,
@@ -94,11 +74,6 @@ interface SavedAttachment {
   path: string;
 }
 
-/**
- * Save email attachments to file server, isolated by agent.
- *
- * Structure: {attachmentsPath}/{agent}/{inbox|quarantine}/{date}/{msgId}/
- */
 async function saveAttachments(
   agentName: string,
   msgId: string,
@@ -106,7 +81,7 @@ async function saveAttachments(
   quarantine: boolean,
 ): Promise<SavedAttachment[]> {
   const basePath = config.storage.attachmentsPath;
-  const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+  const date = new Date().toISOString().slice(0, 10);
   const folder = quarantine ? 'quarantine' : 'inbox';
   const dir = path.join(basePath, agentName, folder, date, msgId);
 
@@ -132,10 +107,9 @@ async function saveAttachments(
       path: filePath,
     });
 
-    console.log(`  Attachment saved: ${safeName} (${content.length} bytes) → ${folder}/`);
+    console.log(`  Attachment saved: ${safeName} (${content.length} bytes) -> ${folder}/`);
   }
 
-  // Write metadata alongside attachments
   const metadata = {
     savedAt: new Date().toISOString(),
     agent: agentName,
@@ -148,22 +122,20 @@ async function saveAttachments(
 }
 
 /**
- * Forward an inbound email to an AI Maestro agent.
+ * Forward an inbound email to an AI Maestro agent via AMP route.
  */
-async function forwardToAIMaestro(
+async function forwardToAgent(
   tenant: string,
   toEmail: string,
-  agentName: string,
-  agentHost: string,
+  agentAddress: string,
+  displayName: string,
   msg: any,
   authResult?: EmailAuthResult
 ): Promise<void> {
   const attachments = msg.attachments || {};
   const attachmentCount = Object.keys(attachments).length;
 
-  // Content security: sanitize email based on sender trust and authentication
   const sanitized = sanitizeEmail(msg, securityConfig, authResult);
-
   const hasSecurityFlags = sanitized.flags.length > 0;
 
   if (hasSecurityFlags) {
@@ -176,19 +148,19 @@ async function forwardToAIMaestro(
       to: toEmail,
       subject: msg.subject,
       tenant,
-      securityFlags: sanitized.flags.map(f => `${f.category}: ${f.match}`),
+      securityFlags: sanitized.flags.map((f: any) => `${f.category}: ${f.match}`),
     });
   } else if (sanitized.trust.level !== 'operator') {
     console.log(`  [SECURITY] Content wrapped (trust: ${sanitized.trust.level})`);
   }
 
-  // Save attachments to file server (quarantine if security flags)
+  // Save attachments
   let savedAttachments: SavedAttachment[] = [];
   if (attachmentCount > 0) {
     const msgId = (msg.headers?.['Message-Id'] || `${Date.now()}`).replace(/[<>]/g, '').replace(/[^a-zA-Z0-9._@-]/g, '_');
     const quarantine = hasSecurityFlags;
     try {
-      savedAttachments = saveAttachments(agentName, msgId, attachments, quarantine);
+      savedAttachments = await saveAttachments(displayName, msgId, attachments, quarantine);
       console.log(`  Saved ${savedAttachments.length} attachment(s) to ${quarantine ? 'quarantine' : 'inbox'}`);
     } catch (err) {
       console.error(`  Failed to save attachments:`, err);
@@ -196,76 +168,84 @@ async function forwardToAIMaestro(
     }
   }
 
-  const payload = {
-    from: config.aimaestro.botAgent,
-    fromHost: config.aimaestro.hostId,
-    to: agentName,
-    toHost: agentHost,
+  // Build AMP route request
+  const ampRequest: AMPRouteRequest = {
+    to: agentAddress,
     subject: `[EMAIL] From: ${msg.from_name || msg.from_email} - ${msg.subject}`,
     priority: 'normal',
-    content: {
+    payload: {
       type: 'notification',
       message: `New email from ${msg.from_name || ''} <${msg.from_email}>\nTo: ${toEmail}\nSubject: ${msg.subject}`,
-      email: {
-        from: msg.from_email,
-        fromName: msg.from_name || null,
-        to: toEmail,
-        subject: sanitized.subject,
-        textBody: sanitized.textBody,
-        htmlBody: sanitized.htmlBody,
-        tenant,
-        hasAttachments: attachmentCount > 0,
-        attachmentCount,
-        attachments: savedAttachments.length > 0 ? savedAttachments.map(a => ({
-          name: a.name,
-          type: a.type,
-          size: a.size,
-          path: a.path,
-        })) : undefined,
-        messageId: msg.headers?.['Message-Id'] || null,
-        inReplyTo: msg.headers?.['In-Reply-To'] || null,
-      },
-      security: {
-        trust: sanitized.trust.level,
-        trustReason: sanitized.trust.reason,
-        injectionFlags: hasSecurityFlags ? sanitized.flags : undefined,
+      context: {
+        channel: {
+          type: 'email',
+          sender: msg.from_email,
+          sender_name: msg.from_name || null,
+          recipient: toEmail,
+          bridge_agent: config.amp.agentAddress,
+          received_at: new Date().toISOString(),
+        },
+        email: {
+          from: msg.from_email,
+          fromName: msg.from_name || null,
+          to: toEmail,
+          subject: sanitized.subject,
+          textBody: sanitized.textBody,
+          htmlBody: sanitized.htmlBody,
+          tenant,
+          hasAttachments: attachmentCount > 0,
+          attachmentCount,
+          attachments: savedAttachments.length > 0 ? savedAttachments.map(a => ({
+            name: a.name,
+            type: a.type,
+            size: a.size,
+            path: a.path,
+          })) : undefined,
+          messageId: msg.headers?.['Message-Id'] || null,
+          inReplyTo: msg.headers?.['In-Reply-To'] || null,
+        },
+        security: {
+          trust: sanitized.trust.level,
+          trustReason: sanitized.trust.reason,
+          source: 'email',
+          scanned: true,
+          injection_flags: hasSecurityFlags ? sanitized.flags.map((f: any) => f.category) : [],
+          scanned_at: new Date().toISOString(),
+        },
       },
     },
   };
 
-  const response = await fetch(`${config.aimaestro.apiUrl}/api/messages`, {
+  const response = await fetch(`${config.amp.maestroUrl}/api/v1/route`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${config.amp.apiKey}`,
+    },
+    body: JSON.stringify(ampRequest),
     signal: AbortSignal.timeout(10000),
   });
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`AI Maestro responded ${response.status}: ${body}`);
+    throw new Error(`AMP route failed (${response.status}): ${body}`);
   }
 
-  const result = await response.json() as any;
+  const result = await response.json() as AMPRouteResponse;
   if (config.debug) {
-    console.log(`  AI Maestro message ID: ${result.message?.id || 'unknown'}`);
+    console.log(`  AMP message ID: ${result.id || 'unknown'}`);
   }
+
+  logEvent('inbound', `Email routed via AMP: ${msg.from_email} -> ${displayName}`, {
+    from: msg.from_email,
+    to: toEmail,
+    subject: msg.subject,
+    tenant,
+    ampMessageId: result.id,
+    deliveryStatus: result.status,
+  });
 }
 
-// Parse URL-encoded bodies (Mandrill sends this format)
-app.use(express.urlencoded({ extended: true, limit: '25mb' }));
-app.use(express.json({ limit: '25mb' }));
-
-// Logging middleware
-app.use((req, res, next) => {
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] ${req.method} ${req.hostname}${req.path}`);
-  next();
-});
-
-/**
- * Extract tenant from hostname
- * email.acme.example.com → acme
- */
 function extractTenant(hostname: string): string {
   const parts = hostname.split('.');
   if (parts.length >= 3) {
@@ -274,238 +254,241 @@ function extractTenant(hostname: string): string {
   return 'unknown';
 }
 
-// =========================================================================
-// Management API routes
-// =========================================================================
+// ---------------------------------------------------------------------------
+// Main entry point (async for config loading)
+// ---------------------------------------------------------------------------
 
-// Auth middleware for management APIs
-app.use('/api', authMiddleware(config.adminToken));
-
-app.use('/api/config', createConfigRouter(
-  () => config,
-  () => securityConfig,
-  (newConfig) => { securityConfig = newConfig; },
-  config.adminToken
-));
-
-app.use('/api/activity', createActivityRouter());
-
-app.use('/api/stats', createStatsRouter(() => config));
-
-// =========================================================================
-// Gateway endpoints
-// =========================================================================
-
-/**
- * Health check endpoint
- */
-app.get('/health', (req: Request, res: Response) => {
-  res.json({
-    status: 'ok',
-    service: 'email-gateway',
-    tenants: Array.from(ALLOWED_TENANTS),
-    routes: Object.keys(config.routing.routes).length,
-    defaults: Object.keys(config.routing.defaults).length,
-    timestamp: new Date().toISOString(),
-  });
-});
-
-/**
- * Mandrill webhook validation (HEAD request)
- */
-app.head('/inbound', (req: Request, res: Response) => {
-  const tenant = extractTenant(req.hostname);
-  console.log(`[VALIDATION] Mandrill validating webhook for tenant: ${tenant}`);
-  res.status(200).end();
-});
-
-/**
- * Mandrill inbound webhook (POST request)
- */
-app.post('/inbound', async (req: Request, res: Response) => {
-  const tenant = extractTenant(req.hostname);
-
-  // Security: Reject unknown tenants
-  if (!ALLOWED_TENANTS.has(tenant)) {
-    console.log(`[SECURITY] Rejected unknown tenant: ${tenant}`);
-    logEvent('security', `Rejected unknown tenant: ${tenant}`, { tenant });
-    return res.status(403).json({ error: 'Unknown tenant' });
+async function main(): Promise<void> {
+  // Load config (async — may trigger AMP auto-registration)
+  let configLoaded: GatewayConfig;
+  let secConfigLoaded: SecurityConfig;
+  try {
+    configLoaded = await loadConfig();
+    secConfigLoaded = loadSecurityConfig();
+  } catch (err) {
+    console.error('[FATAL] Failed to load config:', err);
+    process.exit(1);
   }
 
-  try {
-    const eventsRaw = req.body.mandrill_events;
+  // Assign to module-level vars for use in handlers
+  config = configLoaded;
+  securityConfig = secConfigLoaded;
 
-    // Mandrill validation POST: no events, just return 200
-    if (!eventsRaw) {
-      console.log(`[${tenant}] Validation ping (no mandrill_events) - returning 200`);
-      return res.status(200).json({ received: true, events: 0 });
+  const ALLOWED_TENANTS = new Set(Object.keys(config.mandrill.webhookKeys));
+
+  const app = express();
+  app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+  app.use(express.json({ limit: '25mb' }));
+
+  app.use((req, res, next) => {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] ${req.method} ${req.hostname}${req.path}`);
+    next();
+  });
+
+  // Management API routes
+  app.use('/api', authMiddleware(config.adminToken));
+
+  app.use('/api/config', createConfigRouter(
+    () => config,
+    () => securityConfig,
+    (newConfig) => { securityConfig = newConfig; },
+    config.adminToken
+  ));
+
+  app.use('/api/activity', createActivityRouter());
+  app.use('/api/stats', createStatsRouter(() => config));
+
+  // Health check
+  app.get('/health', (req: Request, res: Response) => {
+    res.json({
+      status: 'ok',
+      service: 'email-gateway',
+      protocol: 'AMP',
+      tenants: Array.from(ALLOWED_TENANTS),
+      routes: Object.keys(config.routing.routes).length,
+      defaults: Object.keys(config.routing.defaults).length,
+      amp: {
+        agent: config.amp.agentAddress,
+        maestro: config.amp.maestroUrl,
+        tenant: config.amp.tenant,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  });
+
+  // Mandrill webhook validation
+  app.head('/inbound', (req: Request, res: Response) => {
+    const tenant = extractTenant(req.hostname);
+    console.log(`[VALIDATION] Mandrill validating webhook for tenant: ${tenant}`);
+    res.status(200).end();
+  });
+
+  // Mandrill inbound webhook
+  app.post('/inbound', async (req: Request, res: Response) => {
+    const tenant = extractTenant(req.hostname);
+
+    if (!ALLOWED_TENANTS.has(tenant)) {
+      console.log(`[SECURITY] Rejected unknown tenant: ${tenant}`);
+      logEvent('security', `Rejected unknown tenant: ${tenant}`, { tenant });
+      return res.status(403).json({ error: 'Unknown tenant' });
     }
 
-    // Security: Verify Mandrill signature on real inbound emails
-    const signature = req.headers['x-mandrill-signature'] as string;
-    const webhookKey = config.mandrill.webhookKeys[tenant];
-    const webhookUrl = `https://email.${tenant}.${config.emailBaseDomain}/inbound`;
+    try {
+      const eventsRaw = req.body.mandrill_events;
 
-    if (signature && webhookKey) {
-      const isValid = verifyMandrillSignature(webhookKey, webhookUrl, req.body, signature);
-      if (!isValid) {
-        console.warn(`[SECURITY] Signature mismatch for tenant: ${tenant} — rejecting webhook`);
-        logEvent('security', `Webhook signature mismatch for tenant ${tenant}`, { tenant });
-        return res.status(403).json({ error: 'Invalid webhook signature' });
-      } else {
-        console.log(`[${tenant}] Signature verified`);
+      if (!eventsRaw) {
+        console.log(`[${tenant}] Validation ping (no mandrill_events) - returning 200`);
+        return res.status(200).json({ received: true, events: 0 });
       }
-    } else if (!signature && webhookKey) {
-      console.warn(`[SECURITY] No signature provided for tenant ${tenant} — rejecting`);
-      return res.status(403).json({ error: 'Missing webhook signature' });
-    } else if (!signature && !webhookKey) {
-      console.warn(`[${tenant}] Warning: No webhook key configured — signature verification skipped`);
-    }
 
-    const events = JSON.parse(eventsRaw);
-    console.log(`[${tenant}] Received ${events.length} email event(s)`);
+      // Verify Mandrill signature
+      const signature = req.headers['x-mandrill-signature'] as string;
+      const webhookKey = config.mandrill.webhookKeys[tenant];
+      const webhookUrl = `https://email.${tenant}.${config.emailBaseDomain}/inbound`;
 
-    let routed = 0;
-    let unroutable = 0;
+      if (signature && webhookKey) {
+        const isValid = verifyMandrillSignature(webhookKey, webhookUrl, req.body, signature);
+        if (!isValid) {
+          console.warn(`[SECURITY] Signature mismatch for tenant: ${tenant}`);
+          logEvent('security', `Webhook signature mismatch for tenant ${tenant}`, { tenant });
+          return res.status(403).json({ error: 'Invalid webhook signature' });
+        }
+        console.log(`[${tenant}] Signature verified`);
+      } else if (!signature && webhookKey) {
+        console.warn(`[SECURITY] No signature provided for tenant ${tenant}`);
+        return res.status(403).json({ error: 'Missing webhook signature' });
+      } else if (!signature && !webhookKey) {
+        console.warn(`[${tenant}] Warning: No webhook key configured`);
+      }
 
-    for (const event of events) {
-      if (event.event !== 'inbound') continue;
+      const events = JSON.parse(eventsRaw);
+      console.log(`[${tenant}] Received ${events.length} email event(s)`);
 
-      const msg = event.msg;
-      const toEmail = msg.to?.[0]?.[0] || '';
+      let routed = 0;
+      let unroutable = 0;
 
-      // Extract SPF/DKIM authentication results from Mandrill webhook data
-      const authResult: EmailAuthResult = {
-        spf: msg.spf?.result || 'none',
-        dkim: msg.dkim?.valid !== undefined ? { valid: !!msg.dkim.valid } : undefined,
-        dmarc: msg.dmarc?.result || 'none',
-      };
+      for (const event of events) {
+        if (event.event !== 'inbound') continue;
 
-      // Log email details
-      console.log(`[${tenant}] Email received:`);
-      console.log(`  From: ${msg.from_name} <${msg.from_email}>`);
-      console.log(`  To: ${toEmail}`);
-      console.log(`  Subject: ${msg.subject}`);
-      console.log(`  Text: ${msg.text?.length || 0} chars`);
-      console.log(`  Attachments: ${Object.keys(msg.attachments || {}).length}`);
-      console.log(`  Auth: SPF=${authResult.spf}, DKIM=${authResult.dkim?.valid ?? 'none'}, DMARC=${authResult.dmarc}`);
+        const msg = event.msg;
+        const toEmail = msg.to?.[0]?.[0] || '';
 
-      // Route to agent
-      const route = await resolveRoute(toEmail, tenant, config);
+        const authResult: EmailAuthResult = {
+          spf: msg.spf?.result || 'none',
+          dkim: msg.dkim?.valid !== undefined ? { valid: !!msg.dkim.valid } : undefined,
+          dmarc: msg.dmarc?.result || 'none',
+        };
 
-      if (route) {
-        console.log(`  Route: ${route.agent}@${route.host} (${route.matchType})`);
-        try {
-          await forwardToAIMaestro(tenant, toEmail, route.agent, route.host, msg, authResult);
-          console.log(`  Forwarded to AI Maestro`);
-          routed++;
+        console.log(`[${tenant}] Email received:`);
+        console.log(`  From: ${msg.from_name} <${msg.from_email}>`);
+        console.log(`  To: ${toEmail}`);
+        console.log(`  Subject: ${msg.subject}`);
+        console.log(`  Auth: SPF=${authResult.spf}, DKIM=${authResult.dkim?.valid ?? 'none'}, DMARC=${authResult.dmarc}`);
 
-          logEvent('inbound', `Email routed: ${msg.from_email} → ${route.agent}`, {
+        const route = await resolveRoute(toEmail, tenant, config);
+
+        if (route) {
+          console.log(`  Route: ${route.agentAddress} (${route.matchType})`);
+          try {
+            await forwardToAgent(tenant, toEmail, route.agentAddress, route.displayName, msg, authResult);
+            console.log(`  Forwarded via AMP`);
+            routed++;
+          } catch (err) {
+            console.error(`  Failed to forward via AMP:`, err);
+            logEvent('error', `Failed to forward email from ${msg.from_email}`, {
+              from: msg.from_email,
+              to: toEmail,
+              subject: msg.subject,
+              tenant,
+              error: (err as Error).message,
+            });
+          }
+        } else {
+          console.log(`  No route found for ${toEmail}`);
+          unroutable++;
+          logEvent('error', `No route found for ${toEmail}`, {
             from: msg.from_email,
             to: toEmail,
             subject: msg.subject,
             tenant,
-            routeMatch: route.matchType,
-          });
-        } catch (err) {
-          console.error(`  Failed to forward to AI Maestro:`, err);
-          logEvent('error', `Failed to forward email from ${msg.from_email}`, {
-            from: msg.from_email,
-            to: toEmail,
-            subject: msg.subject,
-            tenant,
-            error: (err as Error).message,
+            error: 'unroutable',
           });
         }
-      } else {
-        console.log(`  No route found for ${toEmail} - unroutable`);
-        unroutable++;
-
-        logEvent('error', `No route found for ${toEmail}`, {
-          from: msg.from_email,
-          to: toEmail,
-          subject: msg.subject,
-          tenant,
-          error: 'unroutable',
-        });
       }
-    }
 
-    console.log(`[${tenant}] Processed: ${routed} routed, ${unroutable} unroutable`);
-    res.status(200).json({ received: true, events: events.length, routed, unroutable });
+      console.log(`[${tenant}] Processed: ${routed} routed, ${unroutable} unroutable`);
+      res.status(200).json({ received: true, events: events.length, routed, unroutable });
 
-  } catch (error) {
-    console.error(`[${tenant}] Error processing webhook:`, error);
-    logEvent('error', `Webhook processing error for tenant ${tenant}`, {
-      tenant,
-      error: (error as Error).message,
-    });
-    // Return 200 to prevent Mandrill from retrying
-    res.status(200).json({ received: true, error: 'Processing error' });
-  }
-});
-
-// =========================================================================
-// Static file serving (UI)
-// =========================================================================
-
-const uiDistPath = path.resolve(__dirname_local, '..', 'ui', 'dist');
-app.use(express.static(uiDistPath));
-
-// SPA fallback: any non-API, non-webhook GET returns index.html
-app.get('*', (req: Request, res: Response) => {
-  // Don't intercept API or webhook paths
-  if (req.path.startsWith('/api/') || req.path === '/inbound' || req.path === '/health') {
-    return res.status(404).json({ error: 'Not found' });
-  }
-  res.sendFile(path.join(uiDistPath, 'index.html'), (err) => {
-    if (err) {
-      // UI not built yet - show helpful message
-      res.status(200).send(`
-        <html>
-          <body style="font-family: system-ui; background: #0a0a0a; color: #e5e5e5; padding: 40px;">
-            <h1>AI Maestro - Email Gateway</h1>
-            <p>The management UI has not been built yet.</p>
-            <p>Run <code>cd ui && npm install && npm run build</code> to build it.</p>
-            <p>API endpoints are available at <a href="/api/config" style="color: #60a5fa">/api/config</a></p>
-          </body>
-        </html>
-      `);
+    } catch (error) {
+      console.error(`[${tenant}] Error processing webhook:`, error);
+      logEvent('error', `Webhook processing error for tenant ${tenant}`, {
+        tenant,
+        error: (error as Error).message,
+      });
+      res.status(200).json({ received: true, error: 'Processing error' });
     }
   });
-});
 
-// Start server
-const server = app.listen(config.port, '127.0.0.1', () => {
-  const tenantList = Array.from(ALLOWED_TENANTS).join(', ');
-  const routeCount = Object.keys(config.routing.routes).length;
-  const defaultCount = Object.keys(config.routing.defaults).length;
+  // Static file serving (UI)
+  const uiDistPath = path.resolve(__dirname_local, '..', 'ui', 'dist');
+  app.use(express.static(uiDistPath));
 
-  console.log('========================================');
-  console.log('AI Maestro - Email Gateway');
-  console.log('========================================');
-  console.log(`Port: ${config.port}`);
-  console.log(`AI Maestro: ${config.aimaestro.apiUrl}`);
-  console.log(`Bot Agent: ${config.aimaestro.botAgent}`);
-  console.log(`Host: ${config.aimaestro.hostId}`);
-  console.log(`Tenants: ${tenantList}`);
-  console.log(`Webhook keys: ${Object.keys(config.mandrill.webhookKeys).length}`);
-  console.log(`Routes: ${routeCount} explicit, ${defaultCount} defaults`);
-  console.log(`Outbound poll: ${config.outbound.pollIntervalMs}ms`);
-  console.log(`Security: ${securityConfig.operatorEmails.length} operator email(s) whitelisted`);
-  console.log(`Debug: ${config.debug}`);
-  console.log('');
-  console.log('Endpoints:');
-  console.log('  GET  /health        - Health check');
-  console.log('  HEAD /inbound       - Mandrill validation');
-  console.log('  POST /inbound       - Mandrill webhook');
-  console.log('  GET  /api/config    - Gateway config');
-  console.log('  GET  /api/stats     - Gateway metrics');
-  console.log('  GET  /api/activity  - Activity log');
-  console.log('  GET  /              - Management UI');
-  console.log('========================================');
+  app.get('*', (req: Request, res: Response) => {
+    if (req.path.startsWith('/api/') || req.path === '/inbound' || req.path === '/health') {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    res.sendFile(path.join(uiDistPath, 'index.html'), (err) => {
+      if (err) {
+        res.status(200).send(`
+          <html>
+            <body style="font-family: system-ui; background: #0a0a0a; color: #e5e5e5; padding: 40px;">
+              <h1>AI Maestro - Email Gateway (AMP)</h1>
+              <p>The management UI has not been built yet.</p>
+              <p>Run <code>cd ui && npm install && npm run build</code> to build it.</p>
+              <p>API endpoints are available at <a href="/api/config" style="color: #60a5fa">/api/config</a></p>
+            </body>
+          </html>
+        `);
+      }
+    });
+  });
 
-  // Start outbound poller after server is ready
+  // Start server
+  const server = app.listen(config.port, '127.0.0.1', () => {
+    const tenantList = Array.from(ALLOWED_TENANTS).join(', ');
+
+    console.log('========================================');
+    console.log('AI Maestro - Email Gateway (AMP)');
+    console.log('========================================');
+    console.log(`Port: ${config.port}`);
+    console.log(`Protocol: AMP`);
+    console.log(`Agent: ${config.amp.agentAddress}`);
+    console.log(`Default agent: ${config.amp.defaultAgent}`);
+    console.log(`Tenant: ${config.amp.tenant}`);
+    console.log(`Maestro: ${config.amp.maestroUrl}`);
+    console.log(`Inbox: ${config.amp.inboxDir}`);
+    console.log(`Tenants: ${tenantList}`);
+    console.log(`Webhook keys: ${Object.keys(config.mandrill.webhookKeys).length}`);
+    console.log(`Routes: ${Object.keys(config.routing.routes).length} explicit, ${Object.keys(config.routing.defaults).length} defaults`);
+    console.log(`Outbound poll: ${config.outbound.pollIntervalMs}ms`);
+    console.log(`Security: ${securityConfig.operatorEmails.length} operator email(s) whitelisted`);
+    console.log(`Debug: ${config.debug}`);
+    console.log('');
+    console.log('Endpoints:');
+    console.log('  GET  /health        - Health check');
+    console.log('  HEAD /inbound       - Mandrill validation');
+    console.log('  POST /inbound       - Mandrill webhook');
+    console.log('  GET  /api/config    - Gateway config');
+    console.log('  GET  /api/stats     - Gateway metrics');
+    console.log('  GET  /api/activity  - Activity log');
+    console.log('  GET  /              - Management UI');
+    console.log('========================================');
+    console.log('');
+    console.log('Gateway ready! (AMP Protocol)');
+  });
+
+  // Start outbound poller
   const stopPoller = startOutboundPoller(config);
 
   // Graceful shutdown
@@ -524,4 +507,13 @@ const server = app.listen(config.port, '127.0.0.1', () => {
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
+}
+
+// Module-level config refs (set in main())
+let config: GatewayConfig;
+let securityConfig: SecurityConfig;
+
+main().catch((err) => {
+  console.error('Fatal error:', err);
+  process.exit(1);
 });

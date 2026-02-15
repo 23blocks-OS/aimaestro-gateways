@@ -1,24 +1,26 @@
 /**
- * Slack Gateway - Inbound Message Handlers
+ * Slack Gateway - Inbound Message Handlers (AMP Protocol)
  *
  * Registers Slack event handlers (app_mention, DM, channel join) and
- * routes messages to AI Maestro agents via content security scanning.
+ * routes messages to agents via AMP POST /api/v1/route.
  */
 
 import type { App } from '@slack/bolt';
-import type { GatewayConfig } from './types.js';
+import type { GatewayConfig, AMPRouteRequest } from './types.js';
 import type { AgentResolver } from './agent-resolver.js';
+import type { ThreadStore } from './thread-store.js';
 import { sanitizeSlackMessage, type SecurityConfig } from './content-security.js';
 import { logEvent } from './api/activity-log.js';
 
 /**
  * Parse @AIM:agent-name routing from message text.
+ * Allows full AMP addresses like @AIM:agent@tenant.domain
  */
 function parseAgentRouting(
   text: string,
   defaultAgent: string
 ): { agent: string; message: string } {
-  const match = text.match(/@AIM:([a-zA-Z0-9_-]+)/i);
+  const match = text.match(/@AIM:([a-zA-Z0-9_@.\-]+)/i);
 
   if (match) {
     const message = text
@@ -40,138 +42,168 @@ function parseAgentRouting(
 }
 
 /**
- * Send a message to an AI Maestro agent.
+ * Send a message to an agent via AMP route API.
  */
 async function sendToAgent(
   config: GatewayConfig,
-  targetAgent: string,
-  targetHost: string,
+  targetAddress: string,
   text: string,
   channel: string,
   thread_ts: string,
-  user: string,
+  userName: string,
   slackUserId: string,
-  securityConfig: SecurityConfig
+  securityConfig: SecurityConfig,
+  threadStore: ThreadStore
 ): Promise<void> {
   const { sanitized, trust, flags } = sanitizeSlackMessage(
     text,
     slackUserId,
-    user,
+    userName,
     securityConfig
   );
 
   if (flags.length > 0) {
     console.log(
-      `[SECURITY] ${flags.length} injection pattern(s) flagged from ${user} (trust: ${trust.level})`
+      `[SECURITY] ${flags.length} injection pattern(s) flagged from ${userName} (trust: ${trust.level})`
     );
-    logEvent('security', `Injection patterns flagged from ${user}`, {
-      from: user,
-      to: targetAgent,
+    logEvent('security', `Injection patterns flagged from ${userName}`, {
+      from: userName,
+      to: targetAddress,
       subject: text.substring(0, 80),
       securityFlags: flags.map((f) => `${f.category}: ${f.match}`),
     });
   }
 
-  const payload = {
-    from: config.aimaestro.botAgent,
-    fromHost: config.aimaestro.hostId,
-    to: targetAgent,
-    toHost: targetHost,
-    subject: `Slack: Message from ${user}`,
+  const ampRequest: AMPRouteRequest = {
+    to: targetAddress,
+    subject: `Slack message from ${userName}`,
     priority: 'normal',
-    content: {
+    payload: {
       type: 'request',
       message: sanitized,
-      slack: {
-        channel,
-        thread_ts,
-        user,
-      },
-      security: {
-        trust: trust.level,
-        trustReason: trust.reason,
-        injectionFlags: flags.length > 0 ? flags : undefined,
+      context: {
+        channel: {
+          type: 'slack',
+          sender: userName,
+          sender_id: slackUserId,
+          thread_id: channel,
+          bridge_agent: config.amp.agentAddress,
+          received_at: new Date().toISOString(),
+        },
+        slack: { channel, thread_ts, user: userName },
+        security: {
+          trust: trust.level,
+          source: 'slack',
+          scanned: true,
+          injection_flags: flags.map((f) => f.category),
+          wrapped: trust.level !== 'operator',
+          scanned_at: new Date().toISOString(),
+        },
       },
     },
   };
 
-  const response = await fetch(`${config.aimaestro.apiUrl}/api/messages`, {
+  const response = await fetch(`${config.amp.maestroUrl}/api/v1/route`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${config.amp.apiKey}`,
+    },
+    body: JSON.stringify(ampRequest),
     signal: AbortSignal.timeout(config.polling.timeoutMs),
   });
 
   if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Failed to send to ${targetAgent}: ${error}`);
+    const errorBody = await response.text().catch(() => '');
+    if (response.status === 404) {
+      throw new Error(`agent_not_found: ${targetAddress}`);
+    }
+    if (response.status === 429) {
+      throw new Error(`rate_limited: ${targetAddress}`);
+    }
+    throw new Error(`AMP route failed (${response.status}): ${errorBody}`);
   }
 
+  const result = await response.json();
+
+  // Store thread context for reply routing
+  if (result.id) {
+    threadStore.set(result.id, {
+      channel,
+      thread_ts,
+      user: slackUserId,
+      userName,
+      ampMessageId: result.id,
+      createdAt: Date.now(),
+    });
+  }
+
+  const displayName = targetAddress.split('@')[0];
   console.log(
-    `[-> ${targetAgent}@${targetHost}] Message from ${user} (trust: ${trust.level}): ${text.substring(0, 50)}...`
+    `[-> ${targetAddress}] Message from ${userName} (trust: ${trust.level}): ${text.substring(0, 50)}...`
   );
 
-  logEvent('inbound', `Slack message routed: ${user} -> ${targetAgent}`, {
-    from: user,
-    to: targetAgent,
+  logEvent('inbound', `Slack message routed: ${userName} -> ${displayName}`, {
+    from: userName,
+    to: targetAddress,
     subject: text.substring(0, 80),
+    ampMessageId: result.id,
+    deliveryStatus: result.status,
   });
 }
 
 /**
- * Route a Slack message to the appropriate AI Maestro agent.
+ * Route a Slack message to the appropriate agent via AMP.
  */
 async function routeMessage(
   config: GatewayConfig,
   resolver: AgentResolver,
   securityConfig: SecurityConfig,
+  threadStore: ThreadStore,
   text: string,
   channel: string,
   thread_ts: string,
   userId: string,
   say: (msg: { text: string; thread_ts: string }) => Promise<unknown>
 ): Promise<void> {
-  const { agent, message } = parseAgentRouting(text, config.aimaestro.defaultAgent);
+  const { agent, message } = parseAgentRouting(text, config.amp.defaultAgent);
   const userName = await resolver.getUserDisplayName(userId);
-  const result = await resolver.lookupAgentSmart(agent);
+  const { address } = resolver.lookupAgent(agent);
 
-  if (result.status === 'not_found') {
-    await say({
-      text: `Agent \`${agent}\` not found on any host.\n\nUse \`@AIM:agent-name message\` to route to a specific agent.`,
+  try {
+    await sendToAgent(
+      config,
+      address,
+      message,
+      channel,
       thread_ts,
-    });
-    logEvent('error', `Agent not found: ${agent}`, { from: userName, to: agent });
-    return;
-  }
+      userName,
+      userId,
+      securityConfig,
+      threadStore
+    );
+  } catch (error) {
+    const errMsg = (error as Error).message;
 
-  if (result.status === 'multiple') {
-    const matchList = result.matches.map((m) => `- \`${m.alias}@${m.hostId}\``).join('\n');
-    await say({
-      text: `Found multiple matches for \`${agent}\`:\n\n${matchList}\n\nPlease specify the full agent name, e.g.:\n\`@AIM:${result.matches[0].alias}@${result.matches[0].hostId} your message\``,
-      thread_ts,
-    });
-    return;
-  }
+    if (errMsg.startsWith('agent_not_found:')) {
+      await say({
+        text: `Agent \`${agent}\` not found.\n\nUse \`@AIM:agent-name message\` to route to a specific agent.`,
+        thread_ts,
+      });
+      logEvent('error', `Agent not found: ${agent}`, { from: userName, to: agent });
+      return;
+    }
 
-  // Found exactly one match
-  if (result.fuzzy) {
-    await say({
-      text: `Found partial match: \`${result.name}@${result.host}\``,
-      thread_ts,
-    });
-  }
+    if (errMsg.startsWith('rate_limited:')) {
+      await say({
+        text: `Agent \`${agent}\` is rate limited. Please try again in a moment.`,
+        thread_ts,
+      });
+      return;
+    }
 
-  await sendToAgent(
-    config,
-    result.name,
-    result.host,
-    message,
-    channel,
-    thread_ts,
-    userName,
-    userId,
-    securityConfig
-  );
+    throw error;
+  }
 }
 
 /**
@@ -181,7 +213,8 @@ export function registerInboundHandlers(
   app: App,
   config: GatewayConfig,
   resolver: AgentResolver,
-  securityConfig: SecurityConfig
+  securityConfig: SecurityConfig,
+  threadStore: ThreadStore
 ): void {
   // Handle @mentions in channels
   app.event('app_mention', async ({ event, say }) => {
@@ -201,7 +234,7 @@ export function registerInboundHandlers(
         })
         .catch(() => {});
 
-      await routeMessage(config, resolver, securityConfig, text, channel, thread_ts, user, say);
+      await routeMessage(config, resolver, securityConfig, threadStore, text, channel, thread_ts, user, say);
     } catch (error) {
       console.error('Error routing message:', error);
       await say({ text: 'Failed to route message. Please try again.', thread_ts });
@@ -239,7 +272,7 @@ export function registerInboundHandlers(
         })
         .catch(() => {});
 
-      await routeMessage(config, resolver, securityConfig, text, channel, thread_ts, user, say);
+      await routeMessage(config, resolver, securityConfig, threadStore, text, channel, thread_ts, user, say);
     } catch (error) {
       console.error('Error routing message:', error);
       await say({ text: 'Failed to route message. Please try again.', thread_ts });

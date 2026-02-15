@@ -20,15 +20,14 @@ export interface ActivityEvent {
     routeMatch?: string;
     securityFlags?: string[];
     error?: string;
+    ampMessageId?: string;
+    deliveryStatus?: string;
   };
 }
 
 const MAX_EVENTS = 500;
 const events: ActivityEvent[] = [];
 
-/**
- * Add an event to the activity log.
- */
 export function logEvent(
   type: ActivityEvent['type'],
   summary: string,
@@ -51,15 +50,8 @@ export function logEvent(
   return event;
 }
 
-/**
- * Get recent events with optional filtering.
- */
 export function getEvents(
-  options: {
-    limit?: number;
-    type?: ActivityEvent['type'];
-    search?: string;
-  } = {}
+  options: { limit?: number; type?: ActivityEvent['type']; search?: string } = {}
 ): ActivityEvent[] {
   let filtered = events;
 
@@ -82,9 +74,6 @@ export function getEvents(
   return filtered.slice(-limit).reverse();
 }
 
-/**
- * Get aggregate stats for today.
- */
 export function getTodayStats(): {
   inbound: number;
   outbound: number;
@@ -105,9 +94,6 @@ export function getTodayStats(): {
   return counts;
 }
 
-/**
- * Get total event count.
- */
 export function getEventCount(): number {
   return events.length;
 }
