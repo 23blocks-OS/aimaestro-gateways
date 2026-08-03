@@ -8,7 +8,14 @@
 import * as fs from 'fs';
 import type { ThreadContext } from './types.js';
 
-const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+/**
+ * Slack DM threads can go quiet for weeks between messages. With a 24-hour
+ * TTL the context expires while the conversation is still live, and the only
+ * symptom is agent replies vanishing with a "No Slack context, skipping" log
+ * line. 30 days is generous and costs little — the store holds one small
+ * entry per thread.
+ */
+const DEFAULT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 export class ThreadStore {
   private store = new Map<string, ThreadContext>();

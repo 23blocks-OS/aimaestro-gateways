@@ -218,9 +218,12 @@ export function registerInboundHandlers(
 ): void {
   // Handle @mentions in channels
   app.event('app_mention', async ({ event, say }) => {
+    // Skip bot-generated mentions (no user = bot echo)
+    if (!event.user) return;
+
     const text = event.text.replace(/<@[A-Z0-9]+>/g, '').trim();
     const channel = event.channel;
-    const user = event.user || 'unknown';
+    const user = event.user;
     const thread_ts = event.thread_ts || event.ts;
 
     console.log(`[Slack <-] Mention from ${user}: ${text.substring(0, 50)}...`);
@@ -246,6 +249,7 @@ export function registerInboundHandlers(
     const messageEvent = event as {
       channel_type?: string;
       bot_id?: string;
+      subtype?: string;
       text?: string;
       channel: string;
       user?: string;
@@ -254,11 +258,14 @@ export function registerInboundHandlers(
     };
 
     if (messageEvent.channel_type !== 'im') return;
+    // Filter out bot messages: bot_id present, has a subtype (bot_message, etc.), or no user
     if (messageEvent.bot_id) return;
+    if (messageEvent.subtype) return;
+    if (!messageEvent.user) return;
 
     const text = messageEvent.text || '';
     const channel = messageEvent.channel;
-    const user = messageEvent.user || 'unknown';
+    const user = messageEvent.user;
     const thread_ts = messageEvent.thread_ts || messageEvent.ts;
 
     console.log(`[Slack <-] DM from ${user}: ${text.substring(0, 50)}...`);
