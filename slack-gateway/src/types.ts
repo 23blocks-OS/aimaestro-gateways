@@ -104,6 +104,15 @@ export interface ThreadContext {
   userName: string;
   ampMessageId: string;
   createdAt: number;
+  /**
+   * AMP address of the agent on the other end of this thread.
+   *
+   * Set when an agent starts the conversation, so that a human reply in
+   * that thread routes back to the originating agent rather than falling
+   * through to AMP_DEFAULT_AGENT. Absent on human-initiated threads, where
+   * the agent is chosen by @AIM: routing at message time.
+   */
+  agentAddress?: string;
 }
 
 // ---------------------------------------------------------------------------
