@@ -166,7 +166,12 @@ async function routeMessage(
   userId: string,
   say: (msg: { text: string; thread_ts: string }) => Promise<unknown>
 ): Promise<void> {
-  const { agent, message } = parseAgentRouting(text, config.amp.defaultAgent);
+  // If an agent started this thread, replies belong to that agent rather
+  // than to AMP_DEFAULT_AGENT. Explicit @AIM: routing still wins.
+  const existingThread = threadStore.findByThread(channel, thread_ts);
+  const fallbackAgent = existingThread?.agentAddress || config.amp.defaultAgent;
+
+  const { agent, message } = parseAgentRouting(text, fallbackAgent);
   const userName = await resolver.getUserDisplayName(userId);
   const { address } = resolver.lookupAgent(agent);
 
