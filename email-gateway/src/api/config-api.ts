@@ -9,7 +9,7 @@ import { readFile, writeFile } from 'fs/promises';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { stringify as yamlStringify } from 'yaml';
-import type { GatewayConfig, RouteTarget } from '../types.js';
+import type { GatewayConfig } from '../types.js';
 import { reloadRouting, getRoutingFilePath } from '../config.js';
 import type { SecurityConfig } from '../content-security.js';
 
@@ -53,7 +53,7 @@ export function createConfigRouter(
   router.get('/routing', async (req: Request, res: Response) => {
     const config = getConfig();
 
-    let emailIndexStatus = { available: false, lastError: '' };
+    const emailIndexStatus = { available: false, lastError: '' };
     try {
       const resp = await fetch(`${config.amp.maestroUrl}/api/agents/email-index`, {
         signal: AbortSignal.timeout(3000),
