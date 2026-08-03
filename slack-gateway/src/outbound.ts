@@ -1,25 +1,47 @@
 /**
  * Slack Gateway - Outbound Response Poller (AMP Protocol)
  *
- * Scans the AMP filesystem inbox for agent responses and posts
- * them back to the originating Slack thread.
+ * Scans the AMP filesystem inbox for agent messages and posts them to Slack.
+ *
+ * Two kinds of message are handled:
+ *
+ *   Replies      the agent is answering a Slack message, and routing context
+ *                comes from the payload or the thread store.
+ *
+ *   Initiations  the agent is starting the conversation and names a
+ *                destination in `payload.context.slack.to`. The gateway
+ *                resolves it to a channel, posts a new top-level message,
+ *                and registers the resulting thread so the human's reply
+ *                routes back to that same agent.
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import type { App } from '@slack/bolt';
-import type { GatewayConfig, AMPMessage, ThreadContext } from './types.js';
+import type { GatewayConfig, AMPMessage } from './types.js';
 import type { ThreadStore } from './thread-store.js';
+import type { TargetResolver } from './slack-target.js';
+import { TargetResolutionError } from './slack-target.js';
 import { logEvent } from './api/activity-log.js';
 
+/** Where a message should be posted. A missing thread_ts means a new conversation. */
+interface Destination {
+  channel: string;
+  thread_ts?: string;
+  /** True when the agent initiated rather than replied. */
+  initiated: boolean;
+}
+
+type Outcome = 'delivered' | 'undeliverable' | 'retry';
+
 /**
- * Extract Slack routing context from an AMP message.
+ * Extract Slack reply context from an AMP message.
  * Checks three locations in priority order:
  * 1. payload.context.slack (if the responding agent preserved it)
  * 2. threadStore via envelope.in_reply_to
  * 3. payload.context.channel_reply (alternative reply format)
  */
-function extractSlackContext(
+function extractReplyContext(
   msg: AMPMessage,
   threadStore: ThreadStore
 ): { channel: string; thread_ts: string } | null {
@@ -47,16 +69,61 @@ function extractSlackContext(
 }
 
 /**
+ * Read the destination an agent named for a new conversation.
+ * Accepts `context.slack.to` (preferred) or a bare `context.slack.channel`
+ * with no thread_ts, which reads naturally as "post here, new message".
+ */
+function extractInitiationTarget(msg: AMPMessage): string | null {
+  const slackCtx = (msg.payload?.context as any)?.slack;
+  if (!slackCtx) return null;
+
+  if (typeof slackCtx.to === 'string' && slackCtx.to.trim()) {
+    return slackCtx.to.trim();
+  }
+  if (typeof slackCtx.channel === 'string' && slackCtx.channel.trim() && !slackCtx.thread_ts) {
+    return slackCtx.channel.trim();
+  }
+  return null;
+}
+
+/**
+ * Resolve where a message goes: an existing thread, or a new conversation.
+ * Returns null when the message names neither.
+ */
+async function resolveDestination(
+  msg: AMPMessage,
+  threadStore: ThreadStore,
+  targetResolver: TargetResolver
+): Promise<Destination | null> {
+  const reply = extractReplyContext(msg, threadStore);
+  if (reply) {
+    return { ...reply, initiated: false };
+  }
+
+  const target = extractInitiationTarget(msg);
+  if (target) {
+    const resolved = await targetResolver.resolve(target);
+    return { channel: resolved.channel, initiated: true };
+  }
+
+  return null;
+}
+
+/**
  * Start the outbound filesystem poller.
  * Returns a cleanup function to stop polling.
  */
 export function startOutboundPoller(
   config: GatewayConfig,
   slackApp: App,
-  threadStore: ThreadStore
+  threadStore: ThreadStore,
+  targetResolver: TargetResolver
 ): () => void {
   let isPolling = false;
   let pollTimeoutId: NodeJS.Timeout | null = null;
+
+  // Messages we can't route are parked here rather than retried forever.
+  const undeliverableDir = path.join(path.dirname(config.amp.inboxDir), 'undeliverable');
 
   function debug(message: string, ...args: unknown[]): void {
     if (config.debug) {
@@ -64,60 +131,132 @@ export function startOutboundPoller(
     }
   }
 
-  async function processMessageFile(filePath: string): Promise<boolean> {
+  /**
+   * Move an unroutable message out of the inbox.
+   *
+   * Without this the poller re-reads the same file on every cycle, logs on
+   * every pass, and the inbox grows without bound. Parking rather than
+   * deleting keeps the payload available for debugging.
+   */
+  function park(filePath: string, reason: string): void {
     try {
-      const raw = fs.readFileSync(filePath, 'utf-8');
-      const msg = JSON.parse(raw) as AMPMessage;
+      fs.mkdirSync(undeliverableDir, { recursive: true });
+      const target = path.join(undeliverableDir, path.basename(filePath));
+      fs.renameSync(filePath, target);
+      console.warn(`[OUTBOUND] Undeliverable (${reason}), parked at ${target}`);
+    } catch (error) {
+      console.error(`[OUTBOUND] Failed to park ${filePath}:`, error);
+    }
+  }
 
-      const slackContext = extractSlackContext(msg, threadStore);
-      if (!slackContext) {
-        console.log(`[OUTBOUND] No Slack context in ${path.basename(filePath)}, skipping`);
-        return false;
+  async function processMessageFile(filePath: string): Promise<Outcome> {
+    let msg: AMPMessage;
+
+    try {
+      msg = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as AMPMessage;
+    } catch (error) {
+      park(filePath, 'unparseable JSON');
+      logEvent('error', 'Unparseable outbound message parked', {
+        error: (error as Error).message,
+      });
+      return 'undeliverable';
+    }
+
+    const displayName = msg.envelope?.from?.split('@')[0] || 'Agent';
+
+    let destination: Destination | null;
+    try {
+      destination = await resolveDestination(msg, threadStore, targetResolver);
+    } catch (error) {
+      if (error instanceof TargetResolutionError) {
+        park(filePath, error.message);
+        logEvent('error', `Slack target could not be resolved: ${error.message}`, {
+          from: displayName,
+          subject: msg.envelope?.subject || '',
+          ampMessageId: msg.envelope?.id,
+        });
+        return 'undeliverable';
       }
+      // Transient (network, rate limit) — leave the file and try again later.
+      console.error(`[OUTBOUND] Target resolution failed, will retry:`, error);
+      return 'retry';
+    }
 
-      const displayName = msg.envelope?.from?.split('@')[0] || 'Agent';
+    if (!destination) {
+      park(filePath, 'no reply context and no context.slack.to');
+      logEvent('error', 'Outbound message had no Slack destination', {
+        from: displayName,
+        subject: msg.envelope?.subject || '',
+        ampMessageId: msg.envelope?.id,
+      });
+      return 'undeliverable';
+    }
+
+    try {
       const responseText = msg.payload?.message || '';
       const formattedResponse = `*[${displayName}]* ${
         typeof responseText === 'string' ? responseText : JSON.stringify(responseText)
       }`;
 
-      await slackApp.client.chat.postMessage({
-        channel: slackContext.channel,
-        thread_ts: slackContext.thread_ts,
+      const posted = await slackApp.client.chat.postMessage({
+        channel: destination.channel,
+        thread_ts: destination.thread_ts,
         text: formattedResponse,
       });
 
-      console.log(
-        `[-> Slack] Response from ${displayName} sent to ${slackContext.channel}/${slackContext.thread_ts}`
-      );
+      if (destination.initiated) {
+        // Register the new thread so the human's reply routes back to this
+        // agent instead of falling through to the default agent.
+        const ts = posted.ts;
+        if (ts && msg.envelope?.id) {
+          threadStore.set(msg.envelope.id, {
+            channel: destination.channel,
+            thread_ts: ts,
+            user: '',
+            userName: displayName,
+            ampMessageId: msg.envelope.id,
+            createdAt: Date.now(),
+            agentAddress: msg.envelope.from,
+          });
+        }
 
-      logEvent('outbound', `Agent response posted to Slack: ${displayName}`, {
-        from: displayName,
-        subject: msg.envelope?.subject || '',
-        ampMessageId: msg.envelope?.id,
-        deliveryStatus: 'delivered',
-      });
+        console.log(`[-> Slack] ${displayName} started a conversation in ${destination.channel}`);
+        logEvent('outbound', `Agent started Slack conversation: ${displayName}`, {
+          from: displayName,
+          subject: msg.envelope?.subject || '',
+          ampMessageId: msg.envelope?.id,
+          deliveryStatus: 'delivered',
+        });
+      } else {
+        console.log(
+          `[-> Slack] Response from ${displayName} sent to ${destination.channel}/${destination.thread_ts}`
+        );
+        logEvent('outbound', `Agent response posted to Slack: ${displayName}`, {
+          from: displayName,
+          subject: msg.envelope?.subject || '',
+          ampMessageId: msg.envelope?.id,
+          deliveryStatus: 'delivered',
+        });
 
-      // Add checkmark reaction
-      await slackApp.client.reactions
-        .add({
-          channel: slackContext.channel,
-          timestamp: slackContext.thread_ts,
-          name: 'white_check_mark',
-        })
-        .catch(() => {});
+        // Acknowledge the message being replied to.
+        await slackApp.client.reactions
+          .add({
+            channel: destination.channel,
+            timestamp: destination.thread_ts!,
+            name: 'white_check_mark',
+          })
+          .catch(() => {});
+      }
 
-      // Delete processed message file
       fs.unlinkSync(filePath);
       debug(`Deleted processed message: ${filePath}`);
-
-      return true;
+      return 'delivered';
     } catch (error) {
-      console.error(`[OUTBOUND] Failed to process ${filePath}:`, error);
-      logEvent('error', `Failed to process outbound message`, {
+      console.error(`[OUTBOUND] Failed to post ${filePath}:`, error);
+      logEvent('error', `Failed to post outbound message`, {
         error: (error as Error).message,
       });
-      return false;
+      return 'retry';
     }
   }
 
@@ -150,8 +289,8 @@ export function startOutboundPoller(
 
         for (const file of files) {
           const filePath = path.join(senderDir, file);
-          const processed = await processMessageFile(filePath);
-          if (processed) foundMessages = true;
+          const outcome = await processMessageFile(filePath);
+          if (outcome === 'delivered') foundMessages = true;
         }
 
         // Clean up empty sender directories

@@ -23,12 +23,14 @@ import { App } from '@slack/bolt';
 import { loadConfig } from './config.js';
 import { loadSecurityConfig, type SecurityConfig } from './content-security.js';
 import { createAgentResolver } from './agent-resolver.js';
+import { createTargetResolver } from './slack-target.js';
 import { ThreadStore } from './thread-store.js';
 import { registerInboundHandlers } from './inbound.js';
 import { startOutboundPoller } from './outbound.js';
 import { createConfigRouter } from './api/config-api.js';
 import { createActivityRouter } from './api/activity-api.js';
 import { createStatsRouter } from './api/stats-api.js';
+import { createSendRouter } from './api/send-api.js';
 import type { GatewayConfig } from './types.js';
 
 /**
@@ -86,6 +88,9 @@ async function main(): Promise<void> {
   // Create agent resolver
   const resolver = createAgentResolver(config, slackApp);
 
+  // Resolves @user / #channel destinations for agent-initiated messages
+  const targetResolver = createTargetResolver(slackApp, config.cache.slackUserTtlMs);
+
   // Create thread store with persistence
   const threadStore = new ThreadStore();
   const threadStorePath = path.resolve(
@@ -104,7 +109,7 @@ async function main(): Promise<void> {
   console.log('Connected to Slack (Socket Mode)');
 
   // Start polling AMP inbox for agent responses
-  const stopPoller = startOutboundPoller(config, slackApp, threadStore);
+  const stopPoller = startOutboundPoller(config, slackApp, threadStore, targetResolver);
 
   // Express server for health checks and management APIs
   const httpApp = express();
@@ -147,6 +152,8 @@ async function main(): Promise<void> {
 
   httpApp.use('/api/stats', createStatsRouter(() => config));
 
+  httpApp.use('/api/slack', createSendRouter(slackApp, targetResolver, threadStore));
+
   const server = httpApp.listen(config.port, '127.0.0.1', () => {
     console.log(`[HTTP] Management API on http://127.0.0.1:${config.port}`);
   });
@@ -157,6 +164,7 @@ async function main(): Promise<void> {
   console.log('  GET  /api/config    - Gateway config');
   console.log('  GET  /api/stats     - Gateway metrics');
   console.log('  GET  /api/activity  - Activity log');
+  console.log('  POST /api/slack/send - Post a message to Slack');
   console.log('========================================');
   console.log('');
   console.log('Gateway ready! (AMP Protocol)');
@@ -164,6 +172,7 @@ async function main(): Promise<void> {
   console.log('  - Use @AIM:agent-name to route to specific agents');
   console.log('  - Messages routed via AMP protocol');
   console.log('  - Responses delivered via filesystem inbox');
+  console.log('  - Agents can start conversations via context.slack.to');
 
   // Graceful shutdown
   let isShuttingDown = false;
@@ -180,6 +189,7 @@ async function main(): Promise<void> {
     console.log('[SHUTDOWN] Thread store saved');
 
     resolver.clearCaches();
+    targetResolver.clearCaches();
 
     server.close(() => {
       console.log('[SHUTDOWN] HTTP server closed');
