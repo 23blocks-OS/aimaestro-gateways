@@ -23,6 +23,8 @@ import type { ThreadStore } from './thread-store.js';
 import type { TargetResolver } from './slack-target.js';
 import { TargetResolutionError } from './slack-target.js';
 import { logEvent } from './api/activity-log.js';
+import { errLine } from './log-hygiene.js';
+import { recordFailure, type RetryState } from './retry-policy.js';
 
 /** Where a message should be posted. A missing thread_ts means a new conversation. */
 interface Destination {
@@ -125,6 +127,10 @@ export function startOutboundPoller(
   // Messages we can't route are parked here rather than retried forever.
   const undeliverableDir = path.join(path.dirname(config.amp.inboxDir), 'undeliverable');
 
+  // Per-file retry state, in memory. A file that keeps failing backs off
+  // (base, 2x, 4x ... capped at 5 min) and is parked once it is clearly stuck.
+  const retryState = new Map<string, RetryState>();
+
   function debug(message: string, ...args: unknown[]): void {
     if (config.debug) {
       console.log(`[DEBUG] ${message}`, ...args);
@@ -143,13 +149,46 @@ export function startOutboundPoller(
       fs.mkdirSync(undeliverableDir, { recursive: true });
       const target = path.join(undeliverableDir, path.basename(filePath));
       fs.renameSync(filePath, target);
+      retryState.delete(filePath);
       console.warn(`[OUTBOUND] Undeliverable (${reason}), parked at ${target}`);
     } catch (error) {
-      console.error(`[OUTBOUND] Failed to park ${filePath}:`, error);
+      console.error(`[OUTBOUND] Failed to park ${filePath}: ${errLine(error)}`);
     }
   }
 
+  /**
+   * Handle a failed attempt: park permanent errors and stuck files, otherwise
+   * schedule a backed-off retry. Logs one line per transition, not per attempt.
+   */
+  function handleFailure(filePath: string, stage: string, error: unknown): Outcome {
+    const sig = errLine(error);
+    const name = path.basename(filePath);
+    const decision = recordFailure(retryState.get(filePath), error, sig, Date.now(), config.polling.intervalMs);
+
+    if (decision.action === 'park') {
+      park(filePath, `${stage}: ${decision.reason}`);
+      logEvent('error', `Outbound message parked after ${stage} failure`, { error: sig });
+      return 'undeliverable';
+    }
+
+    retryState.set(filePath, decision.state);
+    const { attempts, delayMs } = decision.state;
+    if (decision.log === 'first') {
+      console.error(`[OUTBOUND] ${stage} failed for ${name} (attempt ${attempts}), retrying in ${Math.round(delayMs / 1000)}s: ${sig}`);
+      logEvent('error', `Failed to post outbound message`, { error: sig });
+    } else if (decision.log === 'changed') {
+      console.error(`[OUTBOUND] ${stage} error changed for ${name} (attempt ${attempts}), retrying in ${Math.round(delayMs / 1000)}s: ${sig}`);
+    } else if (decision.log === 'backoff') {
+      console.warn(`[OUTBOUND] ${name} still failing (attempt ${attempts}), next try in ${Math.round(delayMs / 1000)}s`);
+    }
+    return 'retry';
+  }
+
   async function processMessageFile(filePath: string): Promise<Outcome> {
+    // Backing off after a failure: skip silently until the next try is due.
+    const pending = retryState.get(filePath);
+    if (pending && Date.now() < pending.nextTryAt) return 'retry';
+
     let msg: AMPMessage;
 
     try {
@@ -177,9 +216,9 @@ export function startOutboundPoller(
         });
         return 'undeliverable';
       }
-      // Transient (network, rate limit) — leave the file and try again later.
-      console.error(`[OUTBOUND] Target resolution failed, will retry:`, error);
-      return 'retry';
+      // Transient (network, rate limit) — leave the file and try again later,
+      // unless the error is permanent or the file is stuck.
+      return handleFailure(filePath, 'target resolution', error);
     }
 
     if (!destination) {
@@ -248,15 +287,12 @@ export function startOutboundPoller(
           .catch(() => {});
       }
 
+      retryState.delete(filePath);
       fs.unlinkSync(filePath);
       debug(`Deleted processed message: ${filePath}`);
       return 'delivered';
     } catch (error) {
-      console.error(`[OUTBOUND] Failed to post ${filePath}:`, error);
-      logEvent('error', `Failed to post outbound message`, {
-        error: (error as Error).message,
-      });
-      return 'retry';
+      return handleFailure(filePath, 'post', error);
     }
   }
 
@@ -264,6 +300,7 @@ export function startOutboundPoller(
     if (isPolling) return false;
     isPolling = true;
     let foundMessages = false;
+    const seen = new Set<string>();
 
     try {
       const inboxDir = config.amp.inboxDir;
@@ -289,6 +326,7 @@ export function startOutboundPoller(
 
         for (const file of files) {
           const filePath = path.join(senderDir, file);
+          seen.add(filePath);
           const outcome = await processMessageFile(filePath);
           if (outcome === 'delivered') foundMessages = true;
         }
@@ -303,6 +341,11 @@ export function startOutboundPoller(
         } catch {
           // Ignore cleanup errors
         }
+      }
+
+      // Forget retry state for files that were removed by someone else.
+      for (const known of retryState.keys()) {
+        if (!seen.has(known)) retryState.delete(known);
       }
     } catch (error) {
       debug('Inbox scan error:', error);

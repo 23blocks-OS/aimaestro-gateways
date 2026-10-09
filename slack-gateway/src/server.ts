@@ -16,6 +16,7 @@
  * - Graceful shutdown
  */
 
+import { createBoltLogger } from './bolt-logger.js';
 import * as path from 'path';
 import { timingSafeEqual } from 'crypto';
 import express, { Request, Response, NextFunction } from 'express';
@@ -83,6 +84,7 @@ async function main(): Promise<void> {
     appToken: config.slack.appToken,
     signingSecret: config.slack.signingSecret,
     socketMode: true,
+    logger: createBoltLogger(),
   });
 
   // Create agent resolver

@@ -5,6 +5,7 @@
  * routes messages to agents via AMP POST /api/v1/route.
  */
 
+import { errLine } from './log-hygiene.js';
 import type { App } from '@slack/bolt';
 import type { GatewayConfig, AMPRouteRequest } from './types.js';
 import type { AgentResolver } from './agent-resolver.js';
@@ -244,7 +245,7 @@ export function registerInboundHandlers(
 
       await routeMessage(config, resolver, securityConfig, threadStore, text, channel, thread_ts, user, say);
     } catch (error) {
-      console.error('Error routing message:', error);
+      console.error(`Error routing message: ${errLine(error)}`);
       await say({ text: 'Failed to route message. Please try again.', thread_ts });
     }
   });
@@ -286,7 +287,7 @@ export function registerInboundHandlers(
 
       await routeMessage(config, resolver, securityConfig, threadStore, text, channel, thread_ts, user, say);
     } catch (error) {
-      console.error('Error routing message:', error);
+      console.error(`Error routing message: ${errLine(error)}`);
       await say({ text: 'Failed to route message. Please try again.', thread_ts });
     }
   });
@@ -308,7 +309,7 @@ export function registerInboundHandlers(
       }
     } catch (error) {
       if (config.debug) {
-        console.log('Error handling channel join:', error);
+        console.log(`Error handling channel join: ${errLine(error)}`);
       }
     }
   });

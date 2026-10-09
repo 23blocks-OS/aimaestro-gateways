@@ -8,6 +8,7 @@
  * URL pattern: https://email.{tenant}.{EMAIL_BASE_DOMAIN}/inbound
  */
 
+import { errLine, clip } from './log-hygiene.js';
 import express, { Request, Response, NextFunction } from 'express';
 import crypto, { timingSafeEqual } from 'crypto';
 import fs from 'fs';
@@ -141,7 +142,7 @@ async function forwardToAgent(
   if (hasSecurityFlags) {
     console.log(`  [SECURITY] ${sanitized.flags.length} injection pattern(s) flagged (trust: ${sanitized.trust.level})`);
     for (const flag of sanitized.flags) {
-      console.log(`    - ${flag.category}: "${flag.match}"`);
+      console.log(`    - ${flag.category}: "${clip(flag.match, 80)}"`);
     }
     logEvent('security', `Injection patterns flagged in email from ${msg.from_email}`, {
       from: msg.from_email,
@@ -163,7 +164,7 @@ async function forwardToAgent(
       savedAttachments = await saveAttachments(displayName, msgId, attachments, quarantine);
       console.log(`  Saved ${savedAttachments.length} attachment(s) to ${quarantine ? 'quarantine' : 'inbox'}`);
     } catch (err) {
-      console.error(`  Failed to save attachments:`, err);
+      console.error(`  Failed to save attachments: ${errLine(err)}`);
       logEvent('error', `Failed to save attachments for ${msg.from_email}`, { error: (err as Error).message });
     }
   }
@@ -281,8 +282,13 @@ async function main(): Promise<void> {
   app.use(express.json({ limit: '25mb' }));
 
   app.use((req, res, next) => {
-    const timestamp = new Date().toISOString();
-    console.log(`[${timestamp}] ${req.method} ${req.hostname}${req.path}`);
+    // Method/path/status only, logged when the response finishes. Health
+    // checks and tunnel scans are not worth a line each.
+    if (req.path !== '/health') {
+      res.on('finish', () => {
+        console.log(`${req.method} ${req.path} ${res.statusCode}`);
+      });
+    }
     next();
   });
 
@@ -380,22 +386,17 @@ async function main(): Promise<void> {
           dmarc: msg.dmarc?.result || 'none',
         };
 
-        console.log(`[${tenant}] Email received:`);
-        console.log(`  From: ${msg.from_name} <${msg.from_email}>`);
-        console.log(`  To: ${toEmail}`);
-        console.log(`  Subject: ${msg.subject}`);
-        console.log(`  Auth: SPF=${authResult.spf}, DKIM=${authResult.dkim?.valid ?? 'none'}, DMARC=${authResult.dmarc}`);
+        console.log(`[${tenant}] Email received: ${clip(msg.from_email, 80)} -> ${clip(toEmail, 80)} (SPF=${authResult.spf}, DKIM=${authResult.dkim?.valid ?? 'none'}, DMARC=${authResult.dmarc})`);
 
         const route = await resolveRoute(toEmail, tenant, config);
 
         if (route) {
-          console.log(`  Route: ${route.agentAddress} (${route.matchType})`);
           try {
             await forwardToAgent(tenant, toEmail, route.agentAddress, route.displayName, msg, authResult);
-            console.log(`  Forwarded via AMP`);
+            console.log(`  Forwarded to ${route.agentAddress} (${route.matchType}) via AMP`);
             routed++;
           } catch (err) {
-            console.error(`  Failed to forward via AMP:`, err);
+            console.error(`  Failed to forward via AMP: ${errLine(err)}`);
             logEvent('error', `Failed to forward email from ${msg.from_email}`, {
               from: msg.from_email,
               to: toEmail,
@@ -421,7 +422,7 @@ async function main(): Promise<void> {
       res.status(200).json({ received: true, events: events.length, routed, unroutable });
 
     } catch (error) {
-      console.error(`[${tenant}] Error processing webhook:`, error);
+      console.error(`[${tenant}] Error processing webhook: ${errLine(error)}`);
       logEvent('error', `Webhook processing error for tenant ${tenant}`, {
         tenant,
         error: (error as Error).message,

@@ -26,6 +26,7 @@
  * }
  */
 
+import { errLine } from './log-hygiene.js';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { GatewayConfig, AMPMessage, AMPRouteRequest } from './types.js';
@@ -165,7 +166,8 @@ function extractReplyPayload(msg: AMPMessage): EmailReplyPayload | null {
   if (!reply) return null;
 
   if (!reply.from || !reply.to || !reply.subject || !reply.body) {
-    console.error('[OUTBOUND] Incomplete emailReply payload:', JSON.stringify(reply));
+    // Keys only: never dump bodies, recipients or attachment content into the log.
+    console.error(`[OUTBOUND] Incomplete emailReply payload (keys: ${Object.keys(reply).join(',')})`);
     return null;
   }
 
@@ -184,11 +186,30 @@ function extractReplyPayload(msg: AMPMessage): EmailReplyPayload | null {
 }
 
 /**
+ * Move an unprocessable message out of the inbox. Parking rather than
+ * deleting keeps the payload available for debugging.
+ */
+function parkFile(undeliverableDir: string, filePath: string, reason: string): void {
+  try {
+    fs.mkdirSync(undeliverableDir, { recursive: true });
+    const target = path.join(undeliverableDir, path.basename(filePath));
+    fs.renameSync(filePath, target);
+    console.warn(`[OUTBOUND] Undeliverable (${reason}), parked at ${target}`);
+  } catch (err) {
+    console.error(`[OUTBOUND] Failed to park ${filePath}: ${errLine(err)}`);
+  }
+}
+
+/**
  * Scan the AMP filesystem inbox for outbound email requests.
  */
 async function scanInbox(config: GatewayConfig): Promise<void> {
   const inboxDir = config.amp.inboxDir;
   if (!inboxDir || !fs.existsSync(inboxDir)) return;
+
+  // Same convention as the Slack gateway: files we can't process are parked
+  // next to the inbox instead of being re-read and re-logged forever.
+  const undeliverableDir = path.join(path.dirname(inboxDir), 'undeliverable');
 
   let senderDirs: string[];
   try {
@@ -214,8 +235,8 @@ async function scanInbox(config: GatewayConfig): Promise<void> {
       let msg: AMPMessage;
       try {
         msg = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      } catch {
-        console.error(`[OUTBOUND] Failed to parse ${filePath}`);
+      } catch (err) {
+        parkFile(undeliverableDir, filePath, `unparseable JSON: ${errLine(err)}`);
         continue;
       }
 

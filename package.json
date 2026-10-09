@@ -7,8 +7,8 @@
     "typecheck:slack": "cd slack-gateway && npx tsc --noEmit",
     "typecheck:email": "cd email-gateway && npx tsc --noEmit",
     "typecheck:whatsapp": "cd whatsapp-gateway && npx tsc --noEmit",
-    "typecheck": "npm run typecheck:discord && npm run typecheck:slack",
-    "test": "cd discord-gateway && npm test"
+    "typecheck": "npm run typecheck:discord && npm run typecheck:slack && npm run typecheck:email",
+    "test": "cd discord-gateway && npm test && cd ../slack-gateway && npm test && cd ../email-gateway && npm test"
   },
   "devDependencies": {
     "eslint": "^9.0.0",
