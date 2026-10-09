@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import {
   backoffMs,
+  isGlobalFailure,
   isPermanentSlackError,
   recordFailure,
   MAX_ATTEMPTS,
@@ -13,10 +14,17 @@ const slackErr = (code: string) => Object.assign(new Error(`An API error occurre
 
 describe('isPermanentSlackError', () => {
   for (const code of [
-    'channel_not_found', 'not_in_channel', 'invalid_blocks', 'is_archived',
-    'account_inactive', 'invalid_auth', 'token_revoked', 'message_too_long',
+    'channel_not_found', 'not_in_channel', 'invalid_blocks', 'is_archived', 'message_too_long',
   ]) {
     it(`treats ${code} as permanent`, () => assert.ok(isPermanentSlackError(slackErr(code))));
+  }
+  // Workspace/token errors hit every message at once. Parking on them would drop the whole
+  // outbound queue out of retry until someone re-queued it by hand.
+  for (const code of ['invalid_auth', 'not_authed', 'token_revoked', 'token_expired', 'account_inactive']) {
+    it(`does NOT treat ${code} as permanent (it is global)`, () => {
+      assert.ok(!isPermanentSlackError(slackErr(code)));
+      assert.ok(isGlobalFailure(slackErr(code)));
+    });
   }
   it('treats rate limits and network errors as transient', () => {
     assert.ok(!isPermanentSlackError(slackErr('ratelimited')));
@@ -64,16 +72,32 @@ describe('recordFailure', () => {
     assert.strictEqual(d.log, 'changed');
   });
 
-  it(`parks after ${MAX_ATTEMPTS} attempts`, () => {
+  // An unrecognised Slack error about this message can run out of attempts.
+  it(`parks an unrecognised Slack error after ${MAX_ATTEMPTS} attempts`, () => {
     const prev: RetryState = { attempts: MAX_ATTEMPTS - 1, firstFailedAt: 0, nextTryAt: 0, delayMs: 300000, signature: 's' };
-    const d = recordFailure(prev, new Error('s'), 's', 1000, 3000);
+    const d = recordFailure(prev, slackErr('some_new_slack_error'), 's', 1000, 3000);
     assert.strictEqual(d.action, 'park');
   });
 
-  it('parks after 24 hours', () => {
+  it('parks an unrecognised Slack error after 24 hours', () => {
     const prev: RetryState = { attempts: 3, firstFailedAt: 0, nextTryAt: 0, delayMs: 12000, signature: 's' };
-    const d = recordFailure(prev, new Error('s'), 's', MAX_AGE_MS, 3000);
+    const d = recordFailure(prev, slackErr('some_new_slack_error'), 's', MAX_AGE_MS, 3000);
     assert.strictEqual(d.action, 'park');
     assert.match((d as { reason: string }).reason, /24h/);
   });
+
+  // A revoked token or a network outage says nothing about the message: keep retrying at the cap.
+  for (const [label, err] of [
+    ['a revoked token', slackErr('token_revoked')],
+    ['invalid_auth', slackErr('invalid_auth')],
+    ['a network error', new Error('getaddrinfo EAI_AGAIN slack.com')],
+    ['a rate limit', slackErr('ratelimited')],
+  ] as const) {
+    it(`never parks on ${label}, even after the attempt and age limits`, () => {
+      const prev: RetryState = { attempts: MAX_ATTEMPTS * 10, firstFailedAt: 0, nextTryAt: 0, delayMs: 300000, signature: 's' };
+      const d = recordFailure(prev, err, 's', MAX_AGE_MS * 30, 3000);
+      assert.strictEqual(d.action, 'retry');
+      assert.strictEqual((d as { state: RetryState }).state.delayMs, 300000);
+    });
+  }
 });
