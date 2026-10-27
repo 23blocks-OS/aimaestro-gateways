@@ -3,6 +3,23 @@
 Per-gateway versions live in each `<gateway>/package.json`. Entries list the
 gateway versions they changed.
 
+## Unreleased
+
+### google-chat-gateway 0.1.0 (new)
+
+Connects Google Chat to AI Maestro agents. Events come in through a Cloud Pub/Sub pull
+subscription (no public URL), answers go out through the Chat REST API.
+
+- **Two identity modes in one process.** A shared Chat app routes by `@AIM:agent` tag, thread affinity, then a default
+  agent. A dedicated Chat app per agent (one Cloud project each, because Google allows one app per project and the app
+  is the identity people see) always goes to its agent. `bots.json` mixes both.
+- Reads both event formats (Workspace add-on and classic), de-duplicates redeliveries, ignores other apps' messages.
+- Prompt-injection screening and the operator allowlist (`OPERATOR_GCHAT_USERS`) as in the other gateways.
+- Agents can start a conversation with a space, a user or an email through `context.gchat.to`.
+- Long answers are split under Google's 32,000-byte limit and posted in the same thread.
+- Same retry policy and undeliverable folder as the Slack gateway, with Google status codes.
+- Tested with fake events only (19 tests). Not yet run against a live Workspace; see the README for the items to verify.
+
 ## 0.1.1 - 2026-10-09
 
 ### slack-gateway 0.1.1, email-gateway 0.1.1

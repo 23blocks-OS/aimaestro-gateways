@@ -15,6 +15,14 @@ services:
       - ./slack-gateway/.env
     restart: unless-stopped
 
+  google-chat-gateway:
+    build: ./google-chat-gateway
+    ports:
+      - "127.0.0.1:3024:3024"
+    env_file:
+      - ./google-chat-gateway/.env
+    restart: unless-stopped
+
   email-gateway:
     build: ./email-gateway
     ports:
