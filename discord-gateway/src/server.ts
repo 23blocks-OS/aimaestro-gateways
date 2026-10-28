@@ -11,6 +11,7 @@ import { timingSafeEqual } from 'crypto';
 import express, { Request, Response, NextFunction } from 'express';
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import { loadConfig } from './config.js';
+import { resolveBindAddress, formatHttpUrl, exposureWarning } from './bind-address.js';
 import { loadSecurityConfig, type SecurityConfig } from './content-security.js';
 import { createAgentResolver } from './agent-resolver.js';
 import { ThreadStore } from './thread-store.js';
@@ -148,8 +149,12 @@ async function main(): Promise<void> {
     )
   );
 
-  const server = httpApp.listen(config.port, '127.0.0.1', () => {
-    console.log(`[HTTP] Management API on http://127.0.0.1:${config.port}`);
+  const bindAddress = resolveBindAddress();
+  const exposure = exposureWarning(bindAddress, config.adminToken);
+  if (exposure) console.warn(`\n!!! ${exposure}\n`);
+
+  const server = httpApp.listen(config.port, bindAddress, () => {
+    console.log(`[HTTP] Management API on ${formatHttpUrl(bindAddress, config.port)}`);
   });
 
   console.log('');

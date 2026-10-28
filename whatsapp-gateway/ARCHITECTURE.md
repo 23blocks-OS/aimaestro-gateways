@@ -206,6 +206,7 @@ STATE_DIR=~/.whatsapp-gateway
 OUTBOUND_POLL_INTERVAL_MS=5000
 OPERATOR_PHONES=+1234567890
 ADMIN_TOKEN=your-secret-token
+BIND_ADDRESS=127.0.0.1   # default; the Docker image sets 0.0.0.0, compose publishes on 127.0.0.1 only
 DEBUG=false
 ```
 

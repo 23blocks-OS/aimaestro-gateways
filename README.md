@@ -146,7 +146,11 @@ PORT=3023                              # Gateway port
 AIMAESTRO_URL=http://127.0.0.1:23000  # AI Maestro API
 DEFAULT_AGENT=my-agent                 # Default target agent
 ADMIN_TOKEN=your-secret                # Management API auth
+BIND_ADDRESS=127.0.0.1                 # Management API bind address (HOST also works)
 ```
+
+The management API binds to `127.0.0.1` by default. Set `ADMIN_TOKEN` before you change `BIND_ADDRESS` to anything else:
+the gateway prints a loud warning at startup if it listens on a non-loopback address with no token.
 
 ## Agent Routing
 
@@ -171,6 +175,15 @@ docker compose up discord-gateway -d
 
 # View logs
 docker compose logs -f discord-gateway
+```
+
+Inside a container a server bound to `127.0.0.1` cannot be reached through a published port, so each Dockerfile sets
+`BIND_ADDRESS=0.0.0.0` (in the container only). `docker-compose.yml` publishes every port as `127.0.0.1:PORT:PORT`, so the
+host side stays loopback-only. Keep that prefix unless you mean to expose the gateway, and if you do, set `ADMIN_TOKEN`.
+Running the image with plain `docker run -p 3023:3023` publishes on all host interfaces; use `-p 127.0.0.1:3023:3023`.
+
+```bash
+curl http://127.0.0.1:3023/health   # from the Docker host
 ```
 
 All Docker images use 3-stage builds (deps → compile → production) for minimal image size.

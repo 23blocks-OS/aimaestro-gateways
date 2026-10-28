@@ -145,7 +145,8 @@ Agents send email through AI Maestro messages to `email-gateway`:
 | `OUTBOUND_POLL_INTERVAL_MS` | `30000` | How often to check for outbound requests |
 | `OPERATOR_EMAILS` | (empty) | Comma-separated trusted sender emails |
 | `ATTACHMENTS_PATH` | `./attachments` | Root path for attachment storage |
-| `ADMIN_TOKEN` | (empty) | Bearer token for management API authentication |
+| `ADMIN_TOKEN` | (empty) | Bearer token for management API authentication. Required for config changes |
+| `BIND_ADDRESS` (or `HOST`) | `127.0.0.1` | Address the HTTP server binds to. The Docker image sets `0.0.0.0`; compose publishes on `127.0.0.1` only. Non-loopback with no `ADMIN_TOKEN` logs a security warning |
 | `DEBUG` | `false` | Enable debug logging |
 
 ### Credentials file

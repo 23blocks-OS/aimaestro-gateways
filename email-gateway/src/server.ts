@@ -15,6 +15,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { loadConfig } from './config.js';
+import { resolveBindAddress, formatHttpUrl, exposureWarning } from './bind-address.js';
 import { resolveRoute } from './router.js';
 import { startOutboundPoller } from './outbound.js';
 import { loadSecurityConfig, sanitizeEmail, type SecurityConfig, type EmailAuthResult } from './content-security.js';
@@ -457,13 +458,17 @@ async function main(): Promise<void> {
   });
 
   // Start server
-  const server = app.listen(config.port, '127.0.0.1', () => {
+  const bindAddress = resolveBindAddress();
+  const exposure = exposureWarning(bindAddress, config.adminToken);
+  if (exposure) console.warn(`\n!!! ${exposure}\n`);
+
+  const server = app.listen(config.port, bindAddress, () => {
     const tenantList = Array.from(ALLOWED_TENANTS).join(', ');
 
     console.log('========================================');
     console.log('AI Maestro - Email Gateway (AMP)');
     console.log('========================================');
-    console.log(`Port: ${config.port}`);
+    console.log(`Bind: ${formatHttpUrl(bindAddress, config.port)}`);
     console.log(`Protocol: AMP`);
     console.log(`Agent: ${config.amp.agentAddress}`);
     console.log(`Default agent: ${config.amp.defaultAgent}`);
