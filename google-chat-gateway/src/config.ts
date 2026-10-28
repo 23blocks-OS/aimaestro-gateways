@@ -37,6 +37,7 @@ export function parseBots(raw: unknown): BotConfig[] {
       projectId: str('projectId'),
       subscriptionId: str('subscriptionId'),
       credentialsFile: str('credentialsFile') || undefined,
+      impersonateServiceAccount: str('impersonateServiceAccount') || undefined,
       agent: str('agent') || undefined,
     };
   });
@@ -54,6 +55,7 @@ function loadBots(): BotConfig[] {
       projectId: process.env.GCHAT_PROJECT_ID,
       subscriptionId: process.env.GCHAT_SUBSCRIPTION_ID,
       credentialsFile: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+      impersonateServiceAccount: process.env.GCHAT_IMPERSONATE_SA,
       agent: process.env.GCHAT_AGENT,
     },
   ]);

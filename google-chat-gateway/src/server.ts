@@ -71,7 +71,7 @@ async function main(): Promise<void> {
     startBot(
       { config, resolver, securityConfig: () => securityConfig, threadStore },
       bot,
-      ChatClient.fromCredentials(bot.credentialsFile)
+      ChatClient.fromCredentials(bot.credentialsFile, bot.impersonateServiceAccount)
     )
   );
 
