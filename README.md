@@ -37,6 +37,7 @@ AI Maestro Gateways solve all of this with a consistent architecture across 4 pl
 |---------|----------|-------------|--------|
 | [**Discord**](./discord-gateway/) | discord.js v14 (Gateway Intents) | Slash commands, thread support, DMs, guild channels | Production |
 | [**Slack**](./slack-gateway/) | Bolt SDK (Socket Mode) | App mentions, threads, DMs, multi-workspace | Production |
+| [**Google Chat**](./google-chat-gateway/) | Chat API + Cloud Pub/Sub (pull, no public URL) | DMs, @mentions in spaces, threads, one shared app or one app per agent | New (tested with fake events; not yet run against a live Workspace) |
 | [**Email**](./email-gateway/) | Mandrill webhooks + SMTP | Inbound parsing, SPF/DKIM trust, management UI | Production |
 | [**WhatsApp**](./whatsapp-gateway/) | Baileys (WhatsApp Web) | QR login, media handling, group support | Beta |
 
@@ -123,7 +124,7 @@ git clone https://github.com/23blocks-OS/aimaestro-gateways.git
 cd aimaestro-gateways
 
 # Pick a gateway
-cd discord-gateway  # or slack-gateway, email-gateway, whatsapp-gateway
+cd discord-gateway  # or slack-gateway, email-gateway, whatsapp-gateway, google-chat-gateway
 
 # Install and configure
 npm install
@@ -199,6 +200,7 @@ cd discord-gateway && npm run dev
 aimaestro-gateways/
 ├── discord-gateway/     # Discord bot (discord.js v14)
 ├── slack-gateway/       # Slack bot (Bolt SDK, Socket Mode)
+├── google-chat-gateway/ # Google Chat bot (Chat API + Pub/Sub pull)
 ├── email-gateway/       # Email service (Mandrill + SMTP)
 │   └── ui/              # React management dashboard
 ├── whatsapp-gateway/    # WhatsApp bridge (Baileys)

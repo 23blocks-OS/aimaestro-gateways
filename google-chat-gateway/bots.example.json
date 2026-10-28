@@ -1,0 +1,22 @@
+[
+  {
+    "id": "sales",
+    "projectId": "aimaestro-chat-sales",
+    "subscriptionId": "sales-sub",
+    "credentialsFile": "/home/me/.config/aimaestro/sales-sa.json",
+    "agent": "sales-agent"
+  },
+  {
+    "id": "support",
+    "projectId": "aimaestro-chat-support",
+    "subscriptionId": "support-sub",
+    "credentialsFile": "/home/me/.config/aimaestro/support-sa.json",
+    "agent": "support-agent"
+  },
+  {
+    "id": "team",
+    "projectId": "aimaestro-chat-team",
+    "subscriptionId": "team-sub",
+    "credentialsFile": "/home/me/.config/aimaestro/team-sa.json"
+  }
+]

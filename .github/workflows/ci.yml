@@ -30,7 +30,7 @@ jobs:
 
     strategy:
       matrix:
-        gateway: [discord-gateway, slack-gateway, email-gateway, whatsapp-gateway]
+        gateway: [discord-gateway, slack-gateway, email-gateway, whatsapp-gateway, google-chat-gateway]
 
     defaults:
       run:
