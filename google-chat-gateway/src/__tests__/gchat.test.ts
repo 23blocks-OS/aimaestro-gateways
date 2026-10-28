@@ -158,7 +158,7 @@ test('bot choice for an agent-started conversation', () => {
 });
 
 test('a shared app names the agent in the text; a dedicated app does not', () => {
-  assert.equal(formatOutbound(shared, 'eng', 'done'), '*[eng]* done');
+  assert.equal(formatOutbound(shared, 'eng', 'done'), '**[eng]** done');
   assert.equal(formatOutbound(dedicated, 'pas-lola', 'done'), 'done');
 });
 

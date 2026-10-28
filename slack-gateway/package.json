@@ -1,6 +1,6 @@
 {
   "name": "@aimaestro/slack-gateway",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Slack gateway for AI Maestro - routes Slack messages to AI Maestro agents via Bolt",
   "main": "src/server.ts",
   "type": "module",

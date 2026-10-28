@@ -1,6 +1,6 @@
 {
   "name": "@aimaestro/google-chat-gateway",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Google Chat gateway for AI Maestro - routes Google Chat messages to AI Maestro agents over Pub/Sub",
   "main": "src/server.ts",
   "type": "module",
