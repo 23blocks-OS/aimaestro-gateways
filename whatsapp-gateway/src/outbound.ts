@@ -26,6 +26,12 @@ import { normalizeTarget } from './normalize.js';
 import { logEvent } from './api/activity-log.js';
 
 /**
+ * An empty sender folder is only removed after it has been quiet for this long. amp-send.sh creates the folder
+ * and writes the message a moment later; removing it in between made the send fail with "No such file or directory".
+ */
+const EMPTY_DIR_GRACE_MS = 60_000;
+
+/**
  * Send a confirmation message back to the requesting agent via AMP route.
  */
 async function sendConfirmation(
@@ -257,7 +263,7 @@ async function scanInbox(config: GatewayConfig): Promise<void> {
     // Clean up empty sender directories
     try {
       const remaining = fs.readdirSync(senderPath);
-      if (remaining.length === 0) {
+      if (remaining.length === 0 && Date.now() - fs.statSync(senderPath).mtimeMs > EMPTY_DIR_GRACE_MS) {
         fs.rmdirSync(senderPath);
       }
     } catch {}

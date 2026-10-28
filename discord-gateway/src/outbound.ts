@@ -12,6 +12,12 @@ import type { GatewayConfig, AMPMessage } from './types.js';
 import type { ThreadStore } from './thread-store.js';
 import { logEvent } from './api/activity-log.js';
 
+/**
+ * An empty sender folder is only removed after it has been quiet for this long. amp-send.sh creates the folder
+ * and writes the message a moment later; removing it in between made the send fail with "No such file or directory".
+ */
+const EMPTY_DIR_GRACE_MS = 60_000;
+
 /** Discord's max message length */
 const DISCORD_MAX_LENGTH = 2000;
 
@@ -204,7 +210,7 @@ export function startOutboundPoller(
         // Clean up empty sender directories
         try {
           const remaining = fs.readdirSync(senderDir);
-          if (remaining.length === 0) {
+          if (remaining.length === 0 && Date.now() - fs.statSync(senderDir).mtimeMs > EMPTY_DIR_GRACE_MS) {
             fs.rmdirSync(senderDir);
             debug(`Cleaned empty sender dir: ${entry.name}`);
           }

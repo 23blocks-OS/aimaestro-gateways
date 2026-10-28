@@ -26,6 +26,12 @@ import { logEvent } from './api/activity-log.js';
 import { errLine } from './log-hygiene.js';
 import { recordFailure, type RetryState } from './retry-policy.js';
 
+/**
+ * An empty sender folder is only removed after it has been quiet for this long. amp-send.sh creates the folder
+ * and writes the message a moment later; removing it in between made the send fail with "No such file or directory".
+ */
+const EMPTY_DIR_GRACE_MS = 60_000;
+
 /** Where a message should be posted. A missing thread_ts means a new conversation. */
 interface Destination {
   channel: string;
@@ -334,7 +340,7 @@ export function startOutboundPoller(
         // Clean up empty sender directories
         try {
           const remaining = fs.readdirSync(senderDir);
-          if (remaining.length === 0) {
+          if (remaining.length === 0 && Date.now() - fs.statSync(senderDir).mtimeMs > EMPTY_DIR_GRACE_MS) {
             fs.rmdirSync(senderDir);
             debug(`Cleaned empty sender dir: ${entry.name}`);
           }

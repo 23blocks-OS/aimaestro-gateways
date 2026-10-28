@@ -3,6 +3,14 @@
 Per-gateway versions live in each `<gateway>/package.json`. Entries list the
 gateway versions they changed.
 
+## 2026-10-28 (4)
+
+### Fix: a reply could fail with "No such file or directory" in the gateway inbox
+
+Gateway versions: slack-gateway 0.1.5, email-gateway 0.1.5, discord-gateway 0.1.4, whatsapp-gateway 0.1.4, google-chat-gateway 0.1.5.
+
+The outbound poller removed a sender folder in the gateway inbox as soon as it was empty. `amp-send.sh` creates that folder and writes the message a moment later (after its content checks), so a poll landing in that gap deleted the folder and the agent reply failed with "No such file or directory". An empty folder is now removed only after it has been unchanged for 60 seconds. Found on a real run: a Claude Code agent could not deliver a reply to the Google Chat gateway. No automated test covers the timing; the type checks and the existing tests pass.
+
 ## 2026-10-28 (3)
 
 ### Fix: gateways discover the AMP tenant from AI Maestro
@@ -24,7 +32,7 @@ Gateway versions: google-chat-gateway 0.1.4.
 
 Replies from a shared app were prefixed `*[agent]*`. Chat apps now default to standard Markdown, where a single asterisk is italic, so the prefix is now `**[agent]**`. Dedicated apps are unchanged (no prefix).
 
-## 2026-10-29
+## 2026-10-28 (keyless Chat tokens)
 
 ### Feature: Google Chat gateway can run without a key file on a cloud VM
 

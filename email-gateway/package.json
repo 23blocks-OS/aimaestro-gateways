@@ -1,6 +1,6 @@
 {
   "name": "@aimaestro/email-gateway",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Email gateway for AI Maestro - routes inbound emails to agents, sends outbound replies via Mandrill",
   "main": "src/server.ts",
   "type": "module",
