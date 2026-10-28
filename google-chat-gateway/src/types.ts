@@ -21,6 +21,11 @@ export interface BotConfig {
   /** Service account key file. Falls back to GOOGLE_APPLICATION_CREDENTIALS / ADC. */
   credentialsFile?: string;
   /**
+   * Service account email to impersonate for Chat API calls (keyless, for cloud VMs). The machine's
+   * login needs roles/iam.serviceAccountTokenCreator on it, and the IAM Credentials API must be enabled.
+   */
+  impersonateServiceAccount?: string;
+  /**
    * Dedicated agent: every message to this app goes to this agent (name or AMP address) and
    * `@AIM:` tags are ignored. Leave empty for a SHARED app: messages are routed by `@AIM:agent`
    * tag, then thread affinity, then the default agent.

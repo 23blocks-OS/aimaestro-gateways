@@ -252,3 +252,12 @@ test('being added posts a greeting that names the dedicated agent', async () => 
   assert.equal(posted[0], greeting(dedicated, true));
   assert.match(posted[0], /pas-lola/);
 });
+
+test('a bot can name a service account to impersonate (keyless Chat API tokens on a cloud VM)', () => {
+  const [bot] = parseBots([
+    { id: 'a', projectId: 'p', subscriptionId: 's', impersonateServiceAccount: 'vm@p.iam.gserviceaccount.com' },
+  ]);
+  assert.equal(bot.impersonateServiceAccount, 'vm@p.iam.gserviceaccount.com');
+  const [plain] = parseBots([{ id: 'b', projectId: 'p', subscriptionId: 's' }]);
+  assert.equal(plain.impersonateServiceAccount, undefined);
+});

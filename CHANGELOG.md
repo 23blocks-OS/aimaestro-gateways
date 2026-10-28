@@ -3,6 +3,14 @@
 Per-gateway versions live in each `<gateway>/package.json`. Entries list the
 gateway versions they changed.
 
+## 2026-10-29
+
+### Feature: Google Chat gateway can run without a key file on a cloud VM
+
+Gateway versions: google-chat-gateway 0.1.3.
+
+On a Google Cloud VM the machine's token carries only the broad cloud-platform scope, which the Chat API refuses ("insufficient authentication scopes"). Set `GCHAT_IMPERSONATE_SA` (or `impersonateServiceAccount` in `bots.json`) to a service account email and the gateway asks Google for short-lived `chat.bot` tokens for that account with the machine's own login, so no key file has to be created or stored. The machine's account needs `roles/iam.serviceAccountTokenCreator` on that service account, and the IAM Credentials API must be enabled. Key files and ADC keep working as before. One new test (28 total).
+
 ## 2026-10-28 (2)
 
 ### Fix: Docker port mapping, configurable bind address

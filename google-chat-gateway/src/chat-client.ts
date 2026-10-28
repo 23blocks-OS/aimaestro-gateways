@@ -6,7 +6,7 @@
  * Plain fetch with a google-auth-library token: no googleapis dependency.
  */
 
-import { GoogleAuth } from 'google-auth-library';
+import { GoogleAuth, Impersonated } from 'google-auth-library';
 
 const CHAT_API = 'https://chat.googleapis.com/v1';
 const SCOPE = 'https://www.googleapis.com/auth/chat.bot';
@@ -95,12 +95,34 @@ export function toChatError(httpStatus: number, body: string): ChatApiError {
 export class ChatClient {
   constructor(private transport: ChatTransport, private timeoutMs = 15000) {}
 
-  static fromCredentials(credentialsFile?: string): ChatClient {
-    const auth = new GoogleAuth({ keyFile: credentialsFile, scopes: [SCOPE] });
+  /**
+   * Credentials come from a key file, or from the machine (ADC). With `impersonate` set to a service
+   * account email, the machine's own login is used to mint short-lived `chat.bot` tokens for that
+   * account (IAM Credentials API), so no key file is needed on a cloud VM: a VM token carries only the
+   * broad cloud-platform scope, which the Chat API refuses.
+   */
+  static fromCredentials(credentialsFile?: string, impersonate?: string): ChatClient {
+    const auth = new GoogleAuth({
+      keyFile: credentialsFile,
+      scopes: impersonate ? ['https://www.googleapis.com/auth/cloud-platform'] : [SCOPE],
+    });
+    let impersonated: Impersonated | undefined;
     return new ChatClient({
       token: async () => {
-        const client = await auth.getClient();
-        const t = await client.getAccessToken();
+        const source = await auth.getClient();
+        let t;
+        if (impersonate) {
+          impersonated ??= new Impersonated({
+            sourceClient: source as never,
+            targetPrincipal: impersonate,
+            targetScopes: [SCOPE],
+            delegates: [],
+            lifetime: 3600,
+          });
+          t = await impersonated.getAccessToken();
+        } else {
+          t = await source.getAccessToken();
+        }
         if (!t.token) throw new ChatApiError(401, 'UNAUTHENTICATED', 'no access token from Google credentials');
         return t.token;
       },
