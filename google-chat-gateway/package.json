@@ -1,6 +1,6 @@
 {
   "name": "@aimaestro/google-chat-gateway",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Google Chat gateway for AI Maestro - routes Google Chat messages to AI Maestro agents over Pub/Sub",
   "main": "src/server.ts",
   "type": "module",
@@ -12,15 +12,18 @@
     "test": "node --import tsx --test src/__tests__/*.test.ts"
   },
   "dependencies": {
-    "@google-cloud/pubsub": "^4.9.0",
+    "@google-cloud/pubsub": "^6.3.1",
     "dotenv": "^16.6.0",
     "express": "^4.18.2",
     "google-auth-library": "^9.15.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",
-    "@types/node": "^22.10.0",
+    "@types/node": "^24.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": "^22.23.4 || >=24.22.1"
   }
 }

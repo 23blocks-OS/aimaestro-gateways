@@ -3,6 +3,40 @@
 Per-gateway versions live in each `<gateway>/package.json`. Entries list the
 gateway versions they changed.
 
+## 2026-10-28
+
+### Security: dependency and Node updates, 2026-10-28
+
+Gateway versions: slack-gateway 0.1.2, email-gateway 0.1.2, discord-gateway 0.1.1, whatsapp-gateway 0.1.1,
+google-chat-gateway 0.1.1. Message routing and behaviour are unchanged. `npm audit` is at 0 in every package
+(it was 2 high at the repo root, 9 in slack, 11 in discord, 6 in email, 13 in the email UI, 17 in whatsapp, 6 in google-chat).
+
+**Node.** CI, Docker base images and `engines` move to Node 24 (`engines`: `^22.23.4 || >=24.22.1`), the lines that carry the
+October 21 2026 Node.js security release. Node 20 is end of life. `@types/node` is now ^24.
+
+**GitHub Actions.** `actions/checkout` and `actions/setup-node` move to v7; the workflow `permissions` are `contents: read`.
+
+**Code.** email-gateway: the attachment folder and file names built from the sender's `Message-Id` header and attachment
+names could be `..`. They now go through `safeSegment`, so they stay one plain path segment (new tests).
+
+**Dependencies fixed, by package (advisory ids from `npm audit`):**
+
+- critical: proxy-addr (GHSA-jqcg-44mw-7w3h, via express; slack, discord, email, whatsapp); protobufjs (12 advisories
+  including GHSA-xq3m-2v4x-88gg arbitrary code execution; whatsapp, forced to ^7.6.6 for the libsignal copy with an
+  `overrides` entry); @whiskeysockets/baileys (GHSA-qvv5-jq5g-4cgg, whatsapp, now 6.7.24).
+- high: axios (about 37 advisories, SSRF/proxy bypass, prototype pollution, header injection; slack, whatsapp);
+  body-parser (GHSA-v422-hmwv-36x6, GHSA-27r3-jxmh-p828); path-to-regexp (GHSA-37ch-88jc-xwx2, GHSA-j3q9-mxjg-w52f,
+  GHSA-27v5-c462-wpq7); ws (GHSA-58qx-3vcg-4xpx, GHSA-96hv-2xvq-fx4p); undici (20 advisories, discord via discord.js);
+  lodash (GHSA-r5fr-rjxr-66jc, GHSA-f23m-r3pf-42rh, discord); form-data (GHSA-hmw2-7cc7-3qxx); music-metadata (6) and
+  sharp (3) in whatsapp; brace-expansion and js-yaml at the root (dev tooling).
+- email UI (dev build tools): vite (9 advisories), postcss (4), rollup (GHSA-mw96-cpmx-2vgc), picomatch,
+  browserslist, nanoid, source-map-js; react-router-dom moves 6 to 7 (GHSA-wrjc-x8rr-h8h6, GHSA-337j-9hxr-rhxg,
+  GHSA-2j2x-hqr9-3h42, GHSA-jjmj-jmhj-qwj2), the UI builds unchanged.
+- moderate: express and qs (4 advisories, e.g. GHSA-w7fw-mjwx-w883), follow-redirects (GHSA-r4q5-vmmm-2653),
+  yaml (GHSA-48c2-rrv3-qjmp), file-type (2), discord.js and @discordjs/rest; uuid (GHSA-w5hq-g745-h8pq) in
+  google-chat, fixed by @google-cloud/pubsub 4 to 6.
+- low: esbuild (GHSA-g7r4-m6w7-qqqr, dev server), @babel/core (GHSA-4x5r-pxfx-6jf8).
+
 ## Unreleased
 
 ### google-chat-gateway 0.1.0 (new)
