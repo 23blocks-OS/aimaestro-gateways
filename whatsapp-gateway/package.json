@@ -1,6 +1,6 @@
 {
   "name": "@aimaestro/whatsapp-gateway",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "WhatsApp gateway for AI Maestro - routes WhatsApp messages to AI Maestro agents via Baileys",
   "main": "src/server.ts",
   "type": "module",
@@ -21,8 +21,14 @@
   },
   "devDependencies": {
     "@types/express": "^4.17.21",
-    "@types/node": "^22.10.0",
+    "@types/node": "^24.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
+  },
+  "overrides": {
+    "protobufjs": "^7.6.6"
+  },
+  "engines": {
+    "node": "^22.23.4 || >=24.22.1"
   }
 }

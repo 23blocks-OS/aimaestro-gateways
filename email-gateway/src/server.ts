@@ -19,6 +19,7 @@ import { resolveRoute } from './router.js';
 import { startOutboundPoller } from './outbound.js';
 import { loadSecurityConfig, sanitizeEmail, type SecurityConfig, type EmailAuthResult } from './content-security.js';
 import { logEvent } from './api/activity-log.js';
+import { safeSegment } from './safe-path.js';
 import { createConfigRouter } from './api/config-api.js';
 import { createActivityRouter } from './api/activity-api.js';
 import { createStatsRouter } from './api/stats-api.js';
@@ -92,7 +93,7 @@ async function saveAttachments(
 
   for (const [key, att] of Object.entries(attachments)) {
     const name = att.name || key;
-    const safeName = name.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const safeName = safeSegment(String(name).replace(/@/g, '_'), 'attachment');
     const filePath = path.join(dir, safeName);
 
     const content = att.base64
@@ -158,7 +159,7 @@ async function forwardToAgent(
   // Save attachments
   let savedAttachments: SavedAttachment[] = [];
   if (attachmentCount > 0) {
-    const msgId = (msg.headers?.['Message-Id'] || `${Date.now()}`).replace(/[<>]/g, '').replace(/[^a-zA-Z0-9._@-]/g, '_');
+    const msgId = safeSegment(String(msg.headers?.['Message-Id'] || `${Date.now()}`).replace(/[<>]/g, ''), `${Date.now()}`);
     const quarantine = hasSecurityFlags;
     try {
       savedAttachments = await saveAttachments(displayName, msgId, attachments, quarantine);
