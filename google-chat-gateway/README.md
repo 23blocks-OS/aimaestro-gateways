@@ -110,7 +110,10 @@ back to the same agent.
 - Messages from other apps are ignored, so two apps in one space cannot loop.
 - Attachments from users are not forwarded yet.
 
-## Management API (127.0.0.1 only)
+## Management API (127.0.0.1 by default)
+
+Binds to `127.0.0.1` unless `BIND_ADDRESS` (or `HOST`) is set; the Docker image sets `0.0.0.0` and compose publishes
+the port on `127.0.0.1` only. A non-loopback bind with no `ADMIN_TOKEN` logs a security warning at startup.
 
 `GET /health` (public), then behind `Authorization: Bearer $ADMIN_TOKEN`: `GET /api/config`,
 `GET /api/stats`, `GET /api/activity`.

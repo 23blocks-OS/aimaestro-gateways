@@ -8,6 +8,7 @@
 import { timingSafeEqual } from 'crypto';
 import express, { Request, Response, NextFunction } from 'express';
 import { loadConfig } from './config.js';
+import { resolveBindAddress, formatHttpUrl, exposureWarning } from './bind-address.js';
 import { createSession, getStatus, getSelfJid, closeSession } from './session.js';
 import { handleInboundMessage } from './inbound.js';
 import { startOutboundPoller } from './outbound.js';
@@ -93,8 +94,12 @@ async function main(): Promise<void> {
   app.use('/api', authMiddleware(config.adminToken));
   app.use('/api/activity', createActivityRouter());
 
-  const server = app.listen(config.port, '127.0.0.1', () => {
-    console.log(`[HTTP] Management API on http://127.0.0.1:${config.port}`);
+  const bindAddress = resolveBindAddress();
+  const exposure = exposureWarning(bindAddress, config.adminToken);
+  if (exposure) console.warn(`\n!!! ${exposure}\n`);
+
+  const server = app.listen(config.port, bindAddress, () => {
+    console.log(`[HTTP] Management API on ${formatHttpUrl(bindAddress, config.port)}`);
   });
 
   console.log('');

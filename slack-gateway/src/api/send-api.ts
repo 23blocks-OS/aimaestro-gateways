@@ -13,7 +13,9 @@
  * `thread_ts` optional; reply into an existing thread instead of starting one
  * `agent`     optional AMP address to route human replies back to
  *
- * Sits behind the same ADMIN_TOKEN auth as the other /api routes.
+ * Sits behind the same ADMIN_TOKEN auth as the other /api routes. Because it
+ * writes to Slack, it also refuses to run when ADMIN_TOKEN is not set (403),
+ * like the PATCH config routes, so an unauthenticated API can never post.
  */
 
 import { Router, Request, Response } from 'express';
@@ -26,11 +28,16 @@ import { logEvent } from './activity-log.js';
 export function createSendRouter(
   slackApp: App,
   targetResolver: TargetResolver,
-  threadStore: ThreadStore
+  threadStore: ThreadStore,
+  adminToken: string
 ): Router {
   const router = Router();
 
   router.post('/send', async (req: Request, res: Response) => {
+    if (!adminToken) {
+      return res.status(403).json({ error: 'ADMIN_TOKEN required to send messages' });
+    }
+
     const { to, text, thread_ts, agent } = (req.body ?? {}) as {
       to?: unknown;
       text?: unknown;

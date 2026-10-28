@@ -2,13 +2,14 @@
  * Google Chat Gateway - entry point.
  *
  * Pub/Sub pull subscriptions in (no public URL needed), the Chat REST API out, AMP between.
- * Binds the management API to 127.0.0.1 only.
+ * Binds the management API to 127.0.0.1 by default (BIND_ADDRESS or HOST overrides).
  */
 
 import * as path from 'path';
 import { timingSafeEqual } from 'crypto';
 import express, { Request, Response, NextFunction } from 'express';
 import { loadConfig } from './config.js';
+import { resolveBindAddress, formatHttpUrl, exposureWarning } from './bind-address.js';
 import { loadSecurityConfig, type SecurityConfig } from './content-security.js';
 import { createAgentResolver } from './agent-resolver.js';
 import { createTargetResolver } from './target.js';
@@ -109,8 +110,12 @@ async function main(): Promise<void> {
   httpApp.use('/api/activity', createActivityRouter());
   httpApp.use('/api/stats', createStatsRouter(() => config));
 
-  const server = httpApp.listen(config.port, '127.0.0.1', () => {
-    console.log(`[HTTP] Management API on http://127.0.0.1:${config.port}`);
+  const bindAddress = resolveBindAddress();
+  const exposure = exposureWarning(bindAddress, config.adminToken);
+  if (exposure) console.warn(`\n!!! ${exposure}\n`);
+
+  const server = httpApp.listen(config.port, bindAddress, () => {
+    console.log(`[HTTP] Management API on ${formatHttpUrl(bindAddress, config.port)}`);
   });
 
   console.log('');

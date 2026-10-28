@@ -3,6 +3,24 @@
 Per-gateway versions live in each `<gateway>/package.json`. Entries list the
 gateway versions they changed.
 
+## 2026-10-28 (2)
+
+### Fix: Docker port mapping, configurable bind address
+
+Gateway versions: slack-gateway 0.1.3, email-gateway 0.1.3, discord-gateway 0.1.2, whatsapp-gateway 0.1.2,
+google-chat-gateway 0.1.2.
+
+Every gateway bound its HTTP server to `127.0.0.1`, which inside a container is the container's own loopback, so the
+published port never connected. Now:
+
+- The bind address comes from `BIND_ADDRESS` (or `HOST`), default `127.0.0.1`, so runs outside a container are unchanged.
+- Each Dockerfile sets `BIND_ADDRESS=0.0.0.0` (container only). `docker-compose.yml` already publishes `127.0.0.1:PORT:PORT`,
+  so the host side stays loopback-only. No Dockerfile or compose health check existed, so none changed.
+- A non-loopback bind with `ADMIN_TOKEN` unset logs a loud `[SECURITY WARNING]` at startup (the process still starts).
+- slack-gateway: `POST /api/slack/send` now returns 403 when `ADMIN_TOKEN` is unset, like the PATCH config routes, so an
+  unauthenticated API cannot post to Slack. Set `ADMIN_TOKEN` to keep using it.
+- New `src/bind-address.ts` in each gateway, with tests in discord, slack, email and google-chat (whatsapp has no test setup).
+
 ## 2026-10-28
 
 ### Security: dependency and Node updates, 2026-10-28

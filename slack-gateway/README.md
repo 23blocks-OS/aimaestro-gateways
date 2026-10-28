@@ -56,6 +56,7 @@ See `.env.example` for all available environment variables.
 | `/api/config/security` | PATCH | Yes | Update operator Slack IDs |
 | `/api/stats` | GET | Yes | Gateway metrics and uptime |
 | `/api/activity` | GET | Yes | Recent activity log |
+| `/api/slack/send` | POST | Yes, token required | Post to Slack; 403 when `ADMIN_TOKEN` is unset |
 
 ## Running with pm2
 

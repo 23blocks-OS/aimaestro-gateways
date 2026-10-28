@@ -24,5 +24,6 @@ COPY --from=build /app/dist ./dist
 RUN chown -R gateway:gateway /app
 USER gateway
 
+ENV BIND_ADDRESS=0.0.0.0
 EXPOSE 3021
 CMD ["node", "dist/server.js"]
