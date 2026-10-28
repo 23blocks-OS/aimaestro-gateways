@@ -3,6 +3,27 @@
 Per-gateway versions live in each `<gateway>/package.json`. Entries list the
 gateway versions they changed.
 
+## 2026-10-28 (3)
+
+### Fix: gateways discover the AMP tenant from AI Maestro
+
+Gateway versions: slack-gateway 0.1.4, email-gateway 0.1.4, discord-gateway 0.1.3, whatsapp-gateway 0.1.3, google-chat-gateway 0.1.4.
+
+On a fresh AI Maestro install the auto-registration used tenant `default` and AI Maestro refused it (`invalid_field`, "configured for organization ...").
+AI Maestro only registers agents under its organization, and the organization is the tenant. Now, in every gateway's `amp-bootstrap`:
+
+- `AMP_TENANT` is optional. When unset, the tenant is the organization from `GET /api/organization` (older servers: the provider domain from `/api/v1/info` or `/.well-known/agent-messaging.json`). `AMP_TENANT` still overrides.
+- If registration fails with `invalid_field` and `details.expected_tenant`, it retries once with that tenant and logs it.
+- If AI Maestro answers `organization_not_set` (or reports no organization), it prints how to set one (dashboard, or `POST /api/organization {"organization":"<name>"}`) and waits with backoff capped at 60s, logging at most once a minute, then continues by itself once the organization is set. It does not exit, so a process manager does not crash-loop.
+- The saved registration file is named after the domain AI Maestro returns in the address, not a hard-coded `default.aimaestro.local`.
+- The shared logic is in `src/amp-tenant.ts` (identical in all five packages). New tests with a fake fetch cover discovery, the retry and the wait loop in slack, discord, email and google-chat. whatsapp-gateway has no test setup; its copy of `amp-tenant.ts` is byte-identical and is covered by those tests.
+
+### Fix: Google Chat shared-app prefix is Markdown bold
+
+Gateway versions: google-chat-gateway 0.1.4.
+
+Replies from a shared app were prefixed `*[agent]*`. Chat apps now default to standard Markdown, where a single asterisk is italic, so the prefix is now `**[agent]**`. Dedicated apps are unchanged (no prefix).
+
 ## 2026-10-29
 
 ### Feature: Google Chat gateway can run without a key file on a cloud VM

@@ -9,6 +9,13 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  AmpRegistrationError,
+  OrganizationNotSetError,
+  discoverTenant,
+  registerWithTenantFallback,
+  retryWhileOrganizationNotSet,
+} from './amp-tenant.js';
 
 export interface BootstrapOptions {
   agentName: string;
@@ -25,27 +32,6 @@ export interface BootstrapResult {
   agentId: string;
   tenant: string;
   inboxDir: string;
-}
-
-async function discoverProvider(maestroUrl: string): Promise<{ tenant: string; domain: string }> {
-  const endpoints = [
-    { url: `${maestroUrl}/.well-known/agent-messaging.json`, extract: (d: any) => ({ tenant: d.tenant || d.default_tenant, domain: d.domain }) },
-    { url: `${maestroUrl}/api/v1/info`, extract: (d: any) => ({ tenant: d.tenant || d.default_tenant, domain: d.domain }) },
-    { url: `${maestroUrl}/api/v1/health`, extract: (d: any) => ({ tenant: d.tenant || 'default', domain: d.domain || 'default.aimaestro.local' }) },
-  ];
-
-  for (const ep of endpoints) {
-    try {
-      const resp = await fetch(ep.url, { signal: AbortSignal.timeout(5000) });
-      if (resp.ok) {
-        const data = await resp.json();
-        const result = ep.extract(data);
-        if (result.tenant && result.domain) return result;
-      }
-    } catch { /* Try next */ }
-  }
-
-  return { tenant: 'default', domain: 'default.aimaestro.local' };
 }
 
 function generateKeyPair(): { publicKeyPem: string; privateKeyPem: string } {
@@ -69,7 +55,7 @@ async function registerAgent(
 
   if (!resp.ok) {
     const error = await resp.text();
-    throw new Error(`AMP registration failed (${resp.status}): ${error}`);
+    throw new AmpRegistrationError(resp.status, error);
   }
 
   return resp.json();
@@ -128,17 +114,38 @@ export async function bootstrapAMP(options: BootstrapOptions): Promise<Bootstrap
   console.log('[BOOTSTRAP] No AMP_API_KEY found — starting auto-registration...');
   console.log(`[BOOTSTRAP] Agent: ${options.agentName}`);
 
-  const provider = await discoverProvider(options.maestroUrl);
-  const tenant = options.tenant || provider.tenant;
-  console.log(`[BOOTSTRAP] Discovered tenant: ${tenant}, domain: ${provider.domain}`);
-
   const { publicKeyPem, privateKeyPem } = generateKeyPair();
   console.log('[BOOTSTRAP] Generated Ed25519 key pair');
 
-  const result = await registerAgent(options.maestroUrl, tenant, options.agentName, publicKeyPem, options.alias || options.agentName, options.metadata || {});
-  console.log(`[BOOTSTRAP] Registered: ${result.address} (ID: ${result.agent_id})`);
+  // Tenant: AMP_TENANT when set (explicit override), otherwise the AI Maestro
+  // organization. A wrong guess is corrected once from the server's answer, and
+  // a missing organization waits with backoff instead of crashing in a loop.
+  const { result, tenant } = await retryWhileOrganizationNotSet(async () => {
+    let wanted = options.tenant;
+    if (wanted) {
+      console.log(`[BOOTSTRAP] Using tenant from AMP_TENANT: ${wanted}`);
+    } else {
+      const found = await discoverTenant(options.maestroUrl);
+      if (found.organizationUnset) throw new OrganizationNotSetError(options.maestroUrl);
+      wanted = found.tenant || 'default';
+      console.log(`[BOOTSTRAP] Discovered tenant: ${wanted}${found.source ? ` (from ${found.source})` : ' (no organization reported, trying default)'}`);
+    }
+    const registered = await registerWithTenantFallback(wanted, options.maestroUrl, (t) =>
+      registerAgent(
+        options.maestroUrl,
+        t,
+        options.agentName,
+        publicKeyPem,
+        options.alias || options.agentName,
+        options.metadata || {}
+      )
+    );
+    console.log(`[BOOTSTRAP] Registered: ${registered.result.address} (ID: ${registered.result.agent_id})`);
+    return registered;
+  });
+  const domain = result.address.split('@')[1] || `${tenant}.aimaestro.local`;
 
-  const inboxDir = saveAgentFiles(options.agentName, result.agent_id, result.address, tenant, provider.domain, result.api_key, publicKeyPem, privateKeyPem);
+  const inboxDir = saveAgentFiles(options.agentName, result.agent_id, result.address, tenant, domain, result.api_key, publicKeyPem, privateKeyPem);
   updateIndex(options.agentName);
   console.log(`[BOOTSTRAP] Saved agent files to ~/.agent-messaging/agents/${options.agentName}/`);
 

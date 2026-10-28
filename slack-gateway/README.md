@@ -64,3 +64,11 @@ See `.env.example` for all available environment variables.
 pm2 start ecosystem.config.cjs
 pm2 logs slack-gateway
 ```
+
+## AMP registration and tenant
+
+On first start (no `AMP_API_KEY`) the gateway registers itself with AI Maestro at `AMP_MAESTRO_URL` and writes the key to `.env`.
+`AMP_TENANT` is optional: when unset, the gateway reads the organization from AI Maestro (`GET /api/organization`) and registers under it.
+Set `AMP_TENANT` only to force a specific tenant. If AI Maestro rejects the tenant and names the expected one, the gateway retries once with it.
+If AI Maestro has no organization yet, the gateway prints how to set it (dashboard, or `POST /api/organization {"organization":"<name>"}`) and
+retries with backoff (at most once a minute) until it is set, instead of crash-looping.

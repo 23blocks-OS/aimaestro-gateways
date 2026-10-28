@@ -198,3 +198,11 @@ open http://localhost:3020
 5. **File paths over content**: AI Maestro messages contain file paths (not base64 blobs) to keep messages lightweight
 6. **Body limit 25MB**: Express body parser set to handle large Mandrill webhook payloads with inline attachments
 7. **TXT record format**: Mandrill verification uses dot separator (`mandrill_verify.KEY`), NOT equals sign (`mandrill_verify=KEY`)
+
+## AMP registration and tenant
+
+On first start (no `AMP_API_KEY`) the gateway registers itself with AI Maestro at `AMP_MAESTRO_URL` and writes the key to `.env`.
+`AMP_TENANT` is optional: when unset, the gateway reads the organization from AI Maestro (`GET /api/organization`) and registers under it.
+Set `AMP_TENANT` only to force a specific tenant. If AI Maestro rejects the tenant and names the expected one, the gateway retries once with it.
+If AI Maestro has no organization yet, the gateway prints how to set it (dashboard, or `POST /api/organization {"organization":"<name>"}`) and
+retries with backoff (at most once a minute) until it is set, instead of crash-looping.

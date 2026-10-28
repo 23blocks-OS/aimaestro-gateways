@@ -18,8 +18,10 @@ avatar). A Chat app cannot post under another name. So:
 
 | Mode | What people see | Cloud setup | Routing |
 |---|---|---|---|
-| **Shared app** | One app (say "AI Maestro"). Replies read `*[agent]* text` | One project | `@AIM:agent-name` tag, else the agent already answering the thread, else `AMP_DEFAULT_AGENT` |
+| **Shared app** | One app (say "AI Maestro"). Replies read `**[agent]** text` | One project | `@AIM:agent-name` tag, else the agent already answering the thread, else `AMP_DEFAULT_AGENT` |
 | **Dedicated app per agent** | Each agent is its own app, with its own name and avatar | One project per agent | The app's agent, always; tags are ignored |
+
+The shared-app prefix is standard Markdown bold (`**[agent]**`). Chat apps now default to standard Markdown, where the older `*[agent]*` renders as italic.
 
 Both can run in one gateway process (`bots.json` below): for example one dedicated app for the
 agent a customer talks to, and one shared app for the internal team.
@@ -68,6 +70,11 @@ npm start                # or: pm2 start ecosystem.config.cjs
 On first start the gateway registers itself with AI Maestro (`AMP_MAESTRO_URL`) as the bridge
 agent `gchat-bot` and writes `AMP_API_KEY` into `.env`. It must run on the same host as that
 agent's AMP inbox, like the Slack gateway.
+
+**Tenant.** `AMP_TENANT` is optional: when unset, the gateway reads the organization from AI Maestro (`GET /api/organization`) and registers under it.
+Set `AMP_TENANT` only to force a specific tenant. If AI Maestro rejects the tenant and names the expected one, the gateway retries once with it.
+If AI Maestro has no organization yet, the gateway prints how to set it (dashboard, or `POST /api/organization {"organization":"<name>"}`) and
+retries with backoff (at most once a minute) until it is set, instead of crash-looping.
 
 ### Several apps (`bots.json`)
 

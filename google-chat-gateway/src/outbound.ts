@@ -83,10 +83,11 @@ export function extractInitiationTarget(msg: AMPMessage): { to: string; bot?: st
   return null;
 }
 
-/** The text posted: shared apps name the agent (one app, many agents); a dedicated app is the agent. */
+/** The text posted: shared apps name the agent (one app, many agents); a dedicated app is the agent.
+ * Standard Markdown bold: Chat apps default to standard Markdown, where a single asterisk is italic. */
 export function formatOutbound(bot: BotConfig, displayName: string, body: unknown): string {
   const text = typeof body === 'string' ? body : JSON.stringify(body);
-  return bot.agent ? text : `*[${displayName}]* ${text}`;
+  return bot.agent ? text : `**[${displayName}]** ${text}`;
 }
 
 /**
