@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">AI Maestro Gateways</h1>
   <p align="center">
-    Connect AI agents to Discord, Slack, Email & WhatsApp<br/>
+    Connect AI agents to Discord, Slack, Lark, Email & WhatsApp<br/>
     with built-in prompt injection defense and content security
   </p>
 </p>
@@ -18,7 +18,7 @@
 
 ---
 
-Multi-platform messaging gateways for [**AI Maestro**](https://github.com/23blocks-OS/ai-maestro) — an open-source AI agent orchestration platform. These gateways let your AI agents communicate through Discord, Slack, Email, and WhatsApp while defending against prompt injection attacks.
+Multi-platform messaging gateways for [**AI Maestro**](https://github.com/23blocks-OS/ai-maestro) — an open-source AI agent orchestration platform. These gateways let your AI agents communicate through Discord, Slack, Lark, Email, and WhatsApp while defending against prompt injection attacks.
 
 ## Why AI Maestro Gateways?
 
@@ -38,13 +38,14 @@ AI Maestro Gateways solve all of this with a consistent architecture across 4 pl
 | [**Discord**](./discord-gateway/) | discord.js v14 (Gateway Intents) | Slash commands, thread support, DMs, guild channels | Production |
 | [**Slack**](./slack-gateway/) | Bolt SDK (Socket Mode) | App mentions, threads, DMs, multi-workspace | Production |
 | [**Google Chat**](./google-chat-gateway/) | Chat API + Cloud Pub/Sub (pull, no public URL) | DMs, @mentions in spaces, threads, one shared app or one app per agent | New (tested with fake events; not yet run against a live Workspace) |
+| [**Lark**](./lark-gateway/) | @larksuiteoapi/node-sdk (long connection) | Sender routing, DMs, interactive cards, attachments, button actions | New (tested with fake events; not yet run against a live Lark app) |
 | [**Email**](./email-gateway/) | Mandrill webhooks + SMTP | Inbound parsing, SPF/DKIM trust, management UI | Production |
 | [**WhatsApp**](./whatsapp-gateway/) | Baileys (WhatsApp Web) | QR login, media handling, group support | Beta |
 
 ## Architecture
 
 ```
-         Discord    Slack    Email    WhatsApp
+         Discord    Slack    Lark    Email    WhatsApp
             |         |        |         |
             v         v        v         v
      ┌──────────────────────────────────────────┐
@@ -124,7 +125,7 @@ git clone https://github.com/23blocks-OS/aimaestro-gateways.git
 cd aimaestro-gateways
 
 # Pick a gateway
-cd discord-gateway  # or slack-gateway, email-gateway, whatsapp-gateway, google-chat-gateway
+cd discord-gateway  # or slack-gateway, email-gateway, whatsapp-gateway, google-chat-gateway, lark-gateway
 
 # Install and configure
 npm install
@@ -217,6 +218,7 @@ aimaestro-gateways/
 ├── email-gateway/       # Email service (Mandrill + SMTP)
 │   └── ui/              # React management dashboard
 ├── whatsapp-gateway/    # WhatsApp bridge (Baileys)
+├── lark-gateway/        # Lark bot (long connection)
 ├── docker-compose.yml   # Multi-gateway deployment
 ├── eslint.config.js     # Shared ESLint config
 └── .github/workflows/   # CI pipeline

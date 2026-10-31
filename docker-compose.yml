@@ -23,6 +23,18 @@ services:
       - ./google-chat-gateway/.env
     restart: unless-stopped
 
+  lark-gateway:
+    build: ./lark-gateway
+    ports:
+      - "127.0.0.1:3025:3025"
+    env_file:
+      - ./lark-gateway/.env
+    volumes:
+      - ${HOME}/.agent-messaging:/home/gateway/.agent-messaging
+      - ./lark-gateway/routing.yaml:/app/routing.yaml:ro
+      - ./lark-gateway/data:/app/data
+    restart: unless-stopped
+
   email-gateway:
     build: ./email-gateway
     ports:
