@@ -5,12 +5,12 @@
  * Not persisted - resets on restart.
  */
 
-import crypto from 'crypto';
+import crypto from "crypto";
 
 export interface ActivityEvent {
   id: string;
   timestamp: string;
-  type: 'inbound' | 'outbound' | 'error' | 'security';
+  type: "inbound" | "outbound" | "error" | "security";
   summary: string;
   details: {
     from?: string;
@@ -32,9 +32,9 @@ const events: ActivityEvent[] = [];
  * Add an event to the activity log.
  */
 export function logEvent(
-  type: ActivityEvent['type'],
+  type: ActivityEvent["type"],
   summary: string,
-  details: ActivityEvent['details'] = {}
+  details: ActivityEvent["details"] = {},
 ): ActivityEvent {
   const event: ActivityEvent = {
     id: crypto.randomUUID(),
@@ -59,9 +59,9 @@ export function logEvent(
 export function getEvents(
   options: {
     limit?: number;
-    type?: ActivityEvent['type'];
+    type?: ActivityEvent["type"];
     search?: string;
-  } = {}
+  } = {},
 ): ActivityEvent[] {
   let filtered = events;
 
@@ -76,7 +76,7 @@ export function getEvents(
         e.summary.toLowerCase().includes(q) ||
         e.details.from?.toLowerCase().includes(q) ||
         e.details.to?.toLowerCase().includes(q) ||
-        e.details.subject?.toLowerCase().includes(q)
+        e.details.subject?.toLowerCase().includes(q),
     );
   }
 
@@ -99,10 +99,10 @@ export function getTodayStats(): {
   for (const e of events) {
     if (e.timestamp < today) continue;
     counts.total++;
-    if (e.type === 'inbound') counts.inbound++;
-    else if (e.type === 'outbound') counts.outbound++;
-    else if (e.type === 'error') counts.errors++;
-    else if (e.type === 'security') counts.security++;
+    if (e.type === "inbound") counts.inbound++;
+    else if (e.type === "outbound") counts.outbound++;
+    else if (e.type === "error") counts.errors++;
+    else if (e.type === "security") counts.security++;
   }
   return counts;
 }

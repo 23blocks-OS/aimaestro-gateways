@@ -9,10 +9,13 @@
  * GET /api/organization instead of being hard-coded to "default".
  */
 
-export const PROVIDER_SUFFIX = '.aimaestro.local';
+export const PROVIDER_SUFFIX = ".aimaestro.local";
 export const MAX_BACKOFF_MS = 60_000;
 
-type FetchLike = (input: string, init?: { signal?: AbortSignal }) => Promise<{
+type FetchLike = (
+  input: string,
+  init?: { signal?: AbortSignal },
+) => Promise<{
   ok: boolean;
   status: number;
   json(): Promise<unknown>;
@@ -31,8 +34,8 @@ export interface TenantDiscovery {
 /** AI Maestro has no organization yet (`organization_not_set`). */
 export class OrganizationNotSetError extends Error {
   constructor(public readonly maestroUrl: string) {
-    super('AI Maestro has no organization configured');
-    this.name = 'OrganizationNotSetError';
+    super("AI Maestro has no organization configured");
+    this.name = "OrganizationNotSetError";
   }
 }
 
@@ -41,14 +44,21 @@ export class AmpRegistrationError extends Error {
   readonly code?: string;
   readonly expectedTenant?: string;
 
-  constructor(public readonly status: number, public readonly body: string) {
+  constructor(
+    public readonly status: number,
+    public readonly body: string,
+  ) {
     super(`AMP registration failed (${status}): ${body}`);
-    this.name = 'AmpRegistrationError';
+    this.name = "AmpRegistrationError";
     try {
-      const parsed = JSON.parse(body) as { error?: unknown; details?: { expected_tenant?: unknown } };
-      if (typeof parsed.error === 'string') this.code = parsed.error;
+      const parsed = JSON.parse(body) as {
+        error?: unknown;
+        details?: { expected_tenant?: unknown };
+      };
+      if (typeof parsed.error === "string") this.code = parsed.error;
       const expected = parsed.details?.expected_tenant;
-      if (typeof expected === 'string' && expected) this.expectedTenant = expected;
+      if (typeof expected === "string" && expected)
+        this.expectedTenant = expected;
     } catch {
       // Not JSON; leave code undefined.
     }
@@ -67,12 +77,16 @@ export function organizationNotSetMessage(maestroUrl: string): string {
 
 /** "foo.bar.aimaestro.local" -> "bar"; null when the shape is not ours or the tenant is "default". */
 export function tenantFromProvider(provider: unknown): string | null {
-  if (typeof provider !== 'string' || !provider.endsWith(PROVIDER_SUFFIX)) return null;
-  const labels = provider.slice(0, -PROVIDER_SUFFIX.length).split('.').filter(Boolean);
+  if (typeof provider !== "string" || !provider.endsWith(PROVIDER_SUFFIX))
+    return null;
+  const labels = provider
+    .slice(0, -PROVIDER_SUFFIX.length)
+    .split(".")
+    .filter(Boolean);
   const tenant = labels[labels.length - 1];
   // "default" is what AI Maestro reports both for a real "default" organization
   // and for an unset one, so it is not evidence of anything.
-  return tenant && tenant !== 'default' ? tenant : null;
+  return tenant && tenant !== "default" ? tenant : null;
 }
 
 async function getJson(fetchImpl: FetchLike, url: string): Promise<any | null> {
@@ -95,12 +109,20 @@ async function getJson(fetchImpl: FetchLike, url: string): Promise<any | null> {
  */
 export async function discoverTenant(
   maestroUrl: string,
-  fetchImpl: FetchLike = fetch as unknown as FetchLike
+  fetchImpl: FetchLike = fetch as unknown as FetchLike,
 ): Promise<TenantDiscovery> {
   const org = await getJson(fetchImpl, `${maestroUrl}/api/organization`);
-  if (org && typeof org === 'object') {
-    if (typeof org.organization === 'string' && org.organization && org.isSet !== false) {
-      return { tenant: org.organization, organizationUnset: false, source: '/api/organization' };
+  if (org && typeof org === "object") {
+    if (
+      typeof org.organization === "string" &&
+      org.organization &&
+      org.isSet !== false
+    ) {
+      return {
+        tenant: org.organization,
+        organizationUnset: false,
+        source: "/api/organization",
+      };
     }
     if (org.isSet === false || org.organization === null) {
       return { organizationUnset: true };
@@ -109,11 +131,24 @@ export async function discoverTenant(
 
   const info = await getJson(fetchImpl, `${maestroUrl}/api/v1/info`);
   const fromInfo = tenantFromProvider(info?.provider);
-  if (fromInfo) return { tenant: fromInfo, organizationUnset: false, source: '/api/v1/info' };
+  if (fromInfo)
+    return {
+      tenant: fromInfo,
+      organizationUnset: false,
+      source: "/api/v1/info",
+    };
 
-  const wellKnown = await getJson(fetchImpl, `${maestroUrl}/.well-known/agent-messaging.json`);
+  const wellKnown = await getJson(
+    fetchImpl,
+    `${maestroUrl}/.well-known/agent-messaging.json`,
+  );
   const fromWellKnown = tenantFromProvider(wellKnown?.provider);
-  if (fromWellKnown) return { tenant: fromWellKnown, organizationUnset: false, source: '/.well-known/agent-messaging.json' };
+  if (fromWellKnown)
+    return {
+      tenant: fromWellKnown,
+      organizationUnset: false,
+      source: "/.well-known/agent-messaging.json",
+    };
 
   return { organizationUnset: false };
 }
@@ -127,19 +162,32 @@ export async function registerWithTenantFallback<T>(
   tenant: string,
   maestroUrl: string,
   register: (tenant: string) => Promise<T>,
-  log: (msg: string) => void = console.log
+  log: (msg: string) => void = console.log,
 ): Promise<{ result: T; tenant: string }> {
   try {
     return { result: await register(tenant), tenant };
   } catch (err) {
     if (!(err instanceof AmpRegistrationError)) throw err;
-    if (err.code === 'organization_not_set') throw new OrganizationNotSetError(maestroUrl);
-    if (err.code === 'invalid_field' && err.expectedTenant && err.expectedTenant !== tenant) {
-      log(`[BOOTSTRAP] AI Maestro expects tenant '${err.expectedTenant}', not '${tenant}'; retrying once with '${err.expectedTenant}'`);
+    if (err.code === "organization_not_set")
+      throw new OrganizationNotSetError(maestroUrl);
+    if (
+      err.code === "invalid_field" &&
+      err.expectedTenant &&
+      err.expectedTenant !== tenant
+    ) {
+      log(
+        `[BOOTSTRAP] AI Maestro expects tenant '${err.expectedTenant}', not '${tenant}'; retrying once with '${err.expectedTenant}'`,
+      );
       try {
-        return { result: await register(err.expectedTenant), tenant: err.expectedTenant };
+        return {
+          result: await register(err.expectedTenant),
+          tenant: err.expectedTenant,
+        };
       } catch (retryErr) {
-        if (retryErr instanceof AmpRegistrationError && retryErr.code === 'organization_not_set') {
+        if (
+          retryErr instanceof AmpRegistrationError &&
+          retryErr.code === "organization_not_set"
+        ) {
           throw new OrganizationNotSetError(maestroUrl);
         }
         throw retryErr;
@@ -162,9 +210,10 @@ export async function retryWhileOrganizationNotSet<T>(
     now?: () => number;
     log?: (msg: string) => void;
     maxAttempts?: number;
-  } = {}
+  } = {},
 ): Promise<T> {
-  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const sleep =
+    opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = opts.now ?? Date.now;
   const log = opts.log ?? ((m: string) => console.error(m));
   let lastLogged = -Infinity;
@@ -174,7 +223,8 @@ export async function retryWhileOrganizationNotSet<T>(
       return await attempt();
     } catch (err) {
       if (!(err instanceof OrganizationNotSetError)) throw err;
-      if (opts.maxAttempts !== undefined && n + 1 >= opts.maxAttempts) throw err;
+      if (opts.maxAttempts !== undefined && n + 1 >= opts.maxAttempts)
+        throw err;
       if (now() - lastLogged >= MAX_BACKOFF_MS) {
         log(`[BOOTSTRAP] ${organizationNotSetMessage(err.maestroUrl)}`);
         lastLogged = now();

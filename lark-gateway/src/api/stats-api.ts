@@ -4,9 +4,9 @@
  * Gateway metrics endpoint.
  */
 
-import { Router, Request, Response } from 'express';
-import type { GatewayConfig } from '../types.js';
-import { getEventCount, getTodayStats } from './activity-log.js';
+import { Router, Request, Response } from "express";
+import type { GatewayConfig } from "../types.js";
+import { getEventCount, getTodayStats } from "./activity-log.js";
 
 const startTime = Date.now();
 
@@ -14,21 +14,22 @@ let cachedMaestroStatus: boolean | null = null;
 let lastMaestroCheck = 0;
 const HEALTH_CACHE_TTL_MS = 30000;
 
-export function createStatsRouter(
-  getConfig: () => GatewayConfig
-): Router {
+export function createStatsRouter(getConfig: () => GatewayConfig): Router {
   const router = Router();
 
   /**
    * GET /api/stats — Gateway metrics
    */
-  router.get('/', async (req: Request, res: Response) => {
+  router.get("/", async (req: Request, res: Response) => {
     const config = getConfig();
     const uptime = Date.now() - startTime;
 
     // Check AMP Maestro connectivity (cached for 30s)
     const now = Date.now();
-    if (cachedMaestroStatus === null || now - lastMaestroCheck > HEALTH_CACHE_TTL_MS) {
+    if (
+      cachedMaestroStatus === null ||
+      now - lastMaestroCheck > HEALTH_CACHE_TTL_MS
+    ) {
       try {
         const resp = await fetch(`${config.amp.maestroUrl}/api/v1/health`, {
           signal: AbortSignal.timeout(3000),
@@ -43,9 +44,9 @@ export function createStatsRouter(
     const today = getTodayStats();
 
     res.json({
-      status: 'online',
-      protocol: 'AMP',
-      version: '0.1.0',
+      status: "online",
+      protocol: "AMP",
+      version: "0.1.0",
       uptime,
       uptimeHuman: formatUptime(uptime),
       port: config.port,

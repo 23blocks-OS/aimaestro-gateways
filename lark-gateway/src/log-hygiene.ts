@@ -16,25 +16,38 @@ export function errLine(err: unknown): string {
   let text: string;
   if (err === null || err === undefined) {
     text = String(err);
-  } else if (typeof err === 'string') {
+  } else if (typeof err === "string") {
     text = err;
-  } else if (typeof err === 'object') {
-    const e = err as { message?: unknown; data?: { error?: unknown }; code?: unknown };
+  } else if (typeof err === "object") {
+    const e = err as {
+      message?: unknown;
+      data?: { error?: unknown };
+      code?: unknown;
+    };
     const parts: string[] = [];
-    if (typeof e.message === 'string' && e.message) parts.push(e.message);
-    if (typeof e.data?.error === 'string' && e.data.error) parts.push(`lark=${e.data.error}`);
-    if (e.code !== undefined && e.code !== null && e.code !== '') parts.push(`code=${String(e.code)}`);
-    text = parts.length > 0 ? parts.join(' | ') : Object.prototype.toString.call(err);
+    if (typeof e.message === "string" && e.message) parts.push(e.message);
+    if (typeof e.data?.error === "string" && e.data.error)
+      parts.push(`lark=${e.data.error}`);
+    if (e.code !== undefined && e.code !== null && e.code !== "")
+      parts.push(`code=${String(e.code)}`);
+    text =
+      parts.length > 0
+        ? parts.join(" | ")
+        : Object.prototype.toString.call(err);
   } else {
     text = String(err);
   }
-  text = text.replace(/\s+/g, ' ').trim();
-  return text.length > MAX_ERR_LINE ? `${text.slice(0, MAX_ERR_LINE - 3)}...` : text;
+  text = text.replace(/\s+/g, " ").trim();
+  return text.length > MAX_ERR_LINE
+    ? `${text.slice(0, MAX_ERR_LINE - 3)}...`
+    : text;
 }
 
 /** Truncate untrusted text for logging, flattening whitespace. */
 export function clip(text: unknown, max = 80): string {
-  const s = String(text ?? '').replace(/\s+/g, ' ').trim();
+  const s = String(text ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
   return s.length > max ? `${s.slice(0, max - 3)}...` : s;
 }
 
@@ -51,7 +64,10 @@ export interface LogOnceOptions {
 export function createLogOnce(options: LogOnceOptions = {}) {
   const windowMs = options.windowMs ?? 5 * 60 * 1000;
   const sink = options.sink ?? ((line: string) => console.warn(line));
-  const open = new Map<string, { count: number; message: string; timer: NodeJS.Timeout }>();
+  const open = new Map<
+    string,
+    { count: number; message: string; timer: NodeJS.Timeout }
+  >();
 
   function logOnce(key: string, message: string): void {
     const entry = open.get(key);
@@ -66,7 +82,9 @@ export function createLogOnce(options: LogOnceOptions = {}) {
       timer: setTimeout(() => {
         open.delete(key);
         if (created.count > 0) {
-          sink(`${created.message} (repeated ${created.count} times in the last ${Math.round(windowMs / 1000)}s)`);
+          sink(
+            `${created.message} (repeated ${created.count} times in the last ${Math.round(windowMs / 1000)}s)`,
+          );
         }
       }, windowMs),
     };

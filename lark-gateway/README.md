@@ -24,10 +24,11 @@ The gateway is tested with fake events. It has not yet been run against a live L
    The Lark UI may show both a human name and the scope ID; search by the exact ID above. Some tenants may not offer granular `p2p_msg` or `group_at_msg` entries; in that case enable the equivalent receive-message permissions shown for the app and keep the event selection below restricted to the required event.
 
 3. Under **Events & Callbacks → Event Configuration**, select **Receive events through persistent connection**. Add **Receive message** (`im.message.receive_v1`). The gateway receives message events on `WSClient`.
-4. Under **Events & Callbacks → Callback Configuration**, enable interactive card callbacks and add `card.action.trigger`. Set the callback request URL to your HTTPS reverse proxy URL ending in `/lark/callback` (for example `https://gateway.example.invalid/lark/callback`). Add the verification token to `.env` as `LARK_VERIFICATION_TOKEN`; if the Console encrypts callbacks, also set its encryption key as `LARK_ENCRYPT_KEY`. **Card action callbacks use HTTP:** SDK 1.76.0's WebSocket client discards `card` frames before dispatching them, so registering the event on the long connection does not work. The HTTP endpoint uses the SDK `adaptExpress` validator and replies to clicks immediately; the agent request runs asynchronously.
-5. The gateway's management server follows the bind-address convention: it listens on `127.0.0.1` by default. To receive card callbacks from Lark, configure an HTTPS reverse proxy that forwards `/lark/callback` to the local service port. In Docker, compose publishes the port on host loopback; a host reverse proxy can forward to `127.0.0.1:3025`. Set `BIND_ADDRESS` only when your deployment requires the gateway itself to listen on another interface, and set `ADMIN_TOKEN` before exposing management routes.
+4. Under **Events & Callbacks → Callback Configuration**, choose **receive callbacks through persistent connection** and add `card.action.trigger`. Keep the gateway's default `LARK_CARD_CALLBACK_MODE=long-connection`; both `im.message.receive_v1` and card actions are handled by the same SDK `EventDispatcher` on the private long connection. The SDK's Channel implementation registers `card.action.trigger` on this dispatcher. No public ingress or `LARK_VERIFICATION_TOKEN` is needed in this mode.
+5. For legacy deployments that deliver callbacks through a webhook, set `LARK_CARD_CALLBACK_MODE=http`, configure an HTTPS reverse proxy URL ending in `/lark/callback`, and set `LARK_VERIFICATION_TOKEN` (plus `LARK_ENCRYPT_KEY` if Console callback encryption is enabled). HTTP callbacks use the SDK `CardActionHandler` and respond before the agent request runs. The endpoint follows the normal bind-address rules; Docker publishes loopback by default, and a host reverse proxy can forward to `127.0.0.1:3025`.
 6. Save changes, create a version, and publish it to the intended test users. A draft app version will not receive production events. Add the bot to your test users' available range.
 7. Copy the app ID and app secret to `.env` as `LARK_APP_ID` and `LARK_APP_SECRET`. Keep the secret private.
+8. The management server listens on `127.0.0.1` by default. Set `BIND_ADDRESS` only when the service itself needs another interface, and set `ADMIN_TOKEN` before exposing management routes.
 
 Scopes depend on the tenant's Console catalog and the APIs it exposes. If a call returns a missing-scope message, grant the scope named in the Lark response, publish a new version, and restart the gateway.
 
@@ -63,11 +64,13 @@ people:
     admin: false
 ```
 
-`open_id` belongs only in this file and the local gateway state. The gateway sends the person's slug (`alice`) as `context.channel.sender_id` and `context.lark.person`; no `open_id` is sent to an agent. The Lark chat ID is included in `context.lark.chat_id` so AMP replies can return to that conversation.
+`open_id` belongs only in this file and the local gateway state. The gateway sends the person's slug (`alice`) as `context.channel.sender_id` and `context.lark.person`; no `open_id` or raw Lark chat ID is sent to an agent. The private thread store maps AMP replies back to the Lark conversation.
 
-The configured person route wins for ordinary DMs. Replies to a stored parent message stay with that thread's agent. An administrator may use `@AIM:agent-name` to explicitly select another agent; the alternate target receives externally wrapped content because the sender does not own that agent. Unknown and disabled people get the configured response and are not routed. In groups, unmentioned messages are ignored and a bot mention gets only `group_pointer`.
+The configured person route wins for ordinary DMs. Replies to a stored parent message stay with that thread's agent. An administrator may use `@AIM:agent-name` to explicitly select another agent; non-admin tags do not override routing. The alternate target receives externally wrapped content because the sender does not own that agent. Unknown and disabled people get the configured response and are not routed. In groups, unmentioned messages are ignored and a bot mention gets only `group_pointer`.
 
 Messages from a person assigned to the target agent are operator-trusted. Other messages are scanned and wrapped in `<external-content>`. Forwarded (`merge_forward`) content is always wrapped as external data, including when its sender is an operator. Lark text normalization strips bot mention tokens, expands `post` text and inline images, records image/file/audio attachments, ignores stickers, and includes parent message text when available.
+
+Outbound delivery is owner-checked. A reply to a stored Lark thread is accepted only from the exact AMP agent recorded on that thread. An agent-initiated DM using `context.lark.to` is accepted only from the agent configured for that person in `routing.yaml`, compared by full AMP address (agent name plus tenant). Unauthorized or unresolved messages are parked in `undeliverable/` with a reason; the gateway never lets one agent message another person's Lark DM.
 
 ## Configuration
 
@@ -75,8 +78,10 @@ Messages from a person assigned to the target agent are operator-trusted. Other 
 |---|---|---|
 | `LARK_APP_ID`, `LARK_APP_SECRET` | empty | Lark app credentials |
 | `LARK_DOMAIN` | `lark` | `lark` or `feishu` API domain |
-| `LARK_VERIFICATION_TOKEN` | empty | Required HTTP card callback validation token |
-| `LARK_ENCRYPT_KEY` | empty | Callback decryption key when callback encryption is enabled |
+| `LARK_CARD_CALLBACK_MODE` | `long-connection` | `long-connection` (private WS) or `http` (legacy `/lark/callback`) |
+| `LARK_VERIFICATION_TOKEN` | empty | Required only in HTTP callback mode |
+| `LARK_ENCRYPT_KEY` | empty | HTTP callback decryption key when encryption is enabled |
+| `LARK_REPLY_IN_THREAD` | `false` | Set `true` to create topic threads for DM replies |
 | `LARK_ROUTING_FILE` | `./routing.yaml` | Sender-to-agent mapping |
 | `AMP_MAESTRO_URL` | `http://127.0.0.1:23000` | AI Maestro API |
 | `AMP_API_KEY` | empty | AMP bridge token; required unless auto-registration enabled |
@@ -97,9 +102,9 @@ Messages from a person assigned to the target agent are operator-trusted. Other 
 
 ## Limits and delivery
 
-Inbound attachments are downloaded through the message-resource API and base64-encoded in AMP attachments. The gateway accepts at most 10 attachments of at most 25 MB each; messages over either limit receive a clear reply and are not routed. Outbound files and images are uploaded through Lark's resource APIs. Structured Markdown (headings, lists, tables, links) is sent as an interactive card; simple text stays plain text. Long text is split into chunks below the Lark limits. AMP buttons become card buttons carrying the agent, action, value, owner slug, and AMP thread reference.
+Inbound attachments are downloaded through the message-resource API, uploaded via AMP's init/PUT/confirm attachment flow, and referenced in the route payload. The gateway accepts at most 10 attachments of at most 25 MB each; messages over either limit receive a clear reply and are not routed. Outbound AMP references are fetched through their capability URL (inline base64 remains supported), then uploaded through Lark's resource APIs. Structured Markdown (headings, lists, tables, links) is sent as an interactive card; simple text stays plain text. Long text is split into chunks below the Lark limits. AMP buttons become card buttons carrying the agent, action, value, owner slug, and AMP thread reference.
 
-The inbound event is durably queued before acknowledgement. Event and message IDs are deduplicated on disk for 24 hours. Thread context survives restarts. Outbound delivery retries with exponential backoff and parks aged, repeatedly failing messages in the sibling `undeliverable/` directory.
+The inbound event is durably queued before acknowledgement. Event and message IDs are deduplicated on disk for 24 hours. Thread context survives restarts and expires after 30 days; the store is capped at 5,000 entries and 2 MB. Inbound failures use persisted exponential backoff and are parked after eight attempts or 24 hours with one sender notification. Outbound delivery retries with exponential backoff and parks aged, repeatedly failing messages in the sibling `undeliverable/` directory.
 
 ## Docker
 
