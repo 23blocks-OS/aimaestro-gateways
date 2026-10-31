@@ -20,7 +20,7 @@ export interface GatewayConfig {
   appSecret: string;
   verificationToken: string;
   encryptKey: string;
-  domain: "lark" | "feishu";
+  domain: 'lark' | 'feishu';
   amp: {
     apiKey: string;
     agentAddress: string;
@@ -35,7 +35,7 @@ export interface GatewayConfig {
   timeoutMs: number;
   workingDelayMs: number;
   replyInThread: boolean;
-  cardCallbackMode: "long-connection" | "http";
+  cardCallbackMode: 'long-connection' | 'http';
 }
 export interface AMPEnvelope {
   id?: string;
@@ -69,7 +69,7 @@ export interface ThreadContext {
   person: string;
   agent: string;
   createdAt: number;
-  status?: "working" | "done";
+  status?: 'working' | 'done';
 }
 export interface NormalizedMessage {
   text: string;

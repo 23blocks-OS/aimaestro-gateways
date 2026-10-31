@@ -4,9 +4,9 @@
  * Gateway metrics endpoint.
  */
 
-import { Router, Request, Response } from "express";
-import type { GatewayConfig } from "../types.js";
-import { getEventCount, getTodayStats } from "./activity-log.js";
+import { Router, Request, Response } from 'express';
+import type { GatewayConfig } from '../types.js';
+import { getEventCount, getTodayStats } from './activity-log.js';
 
 const startTime = Date.now();
 
@@ -20,7 +20,7 @@ export function createStatsRouter(getConfig: () => GatewayConfig): Router {
   /**
    * GET /api/stats — Gateway metrics
    */
-  router.get("/", async (req: Request, res: Response) => {
+  router.get('/', async (req: Request, res: Response) => {
     const config = getConfig();
     const uptime = Date.now() - startTime;
 
@@ -44,9 +44,9 @@ export function createStatsRouter(getConfig: () => GatewayConfig): Router {
     const today = getTodayStats();
 
     res.json({
-      status: "online",
-      protocol: "AMP",
-      version: "0.1.0",
+      status: 'online',
+      protocol: 'AMP',
+      version: '0.1.0',
       uptime,
       uptimeHuman: formatUptime(uptime),
       port: config.port,

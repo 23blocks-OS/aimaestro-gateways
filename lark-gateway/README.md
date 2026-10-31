@@ -74,6 +74,12 @@ Outbound delivery is owner-checked. A reply to a stored Lark thread is accepted 
 
 AMP inbox files are read from sender-owned subdirectories, but AI Maestro's public AMP address lookup does not expose a sender public key for signature verification. The gateway therefore secures its inbox directory with mode `0700`; run it as a dedicated OS user or container with its own inbox volume, and do not share that writable inbox with untrusted processes. This filesystem trust limitation is shared by the sibling gateways.
 
+## Delivery guarantees
+
+Inbound Lark events are written to a local durable queue before the callback is acknowledged. On restart, queued events are retried. AI Maestro's current `POST /api/v1/route` contract does not accept an idempotency key (verified in `AMPRouteRequest` and `routeMessage`), so there is an at-least-once window: if Maestro accepts a route but the gateway is stopped before it receives and persists the returned AMP message ID, restart resubmits the same Lark message. In that interval the agent may see duplicate work or produce multiple replies; the Lark message ID in `context.lark.message_id` lets replies resolve to the original DM even before a route ID is known, and outbound part checkpoints prevent repeat sends after a part has been recorded as sent.
+
+The in-flight restart soak exercises this boundary with 100 DMs from five senders: the fake Maestro accepted 101 route calls for 100 logical messages (one acceptance-window duplicate), all 100 replies were delivered once to their respective DMs, and none were lost or parked. The fake agent emits only one reply for each stable Lark message ID; the duplicate route acceptance is counted separately and does not prove agents themselves deduplicate repeated work.
+
 ## Configuration
 
 | Variable | Default | Purpose |

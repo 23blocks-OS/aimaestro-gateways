@@ -1,21 +1,24 @@
 /** Queues, normalizes, secures, and routes inbound Lark messages. */
-import fs from "node:fs";
-import path from "node:path";
+import fs from 'node:fs';
+import path from 'node:path';
 import type {
   GatewayConfig,
   NormalizedMessage,
   RoutingConfig,
   ThreadContext,
-} from "./types.js";
-import { DedupeStore } from "./dedupe.js";
-import { ThreadStore } from "./thread-store.js";
-import { normalizeMessage } from "./normalize.js";
-import { agentAddress, parseAgentTag, resolveSender } from "./routing.js";
-import { sanitizeMessage } from "./content-security.js";
-import { logEvent } from "./api/activity-log.js";
-import { sanitizeAttachmentFilename, uploadAmpAttachment } from "./attachment-flow.js";
-import { normalizeCardAction } from "@larksuiteoapi/node-sdk";
-import { authorizeCardAction, routeCardAction } from "./card-actions.js";
+} from './types.js';
+import { DedupeStore } from './dedupe.js';
+import { ThreadStore } from './thread-store.js';
+import { normalizeMessage } from './normalize.js';
+import { agentAddress, parseAgentTag, resolveSender } from './routing.js';
+import { sanitizeMessage } from './content-security.js';
+import { logEvent } from './api/activity-log.js';
+import {
+  sanitizeAttachmentFilename,
+  uploadAmpAttachment,
+} from './attachment-flow.js';
+import { normalizeCardAction } from '@larksuiteoapi/node-sdk';
+import { authorizeCardAction, routeCardAction } from './card-actions.js';
 
 type Dict = Record<string, unknown>;
 export interface LarkOps {
@@ -49,10 +52,10 @@ export interface InboundRetryOptions {
 }
 
 function obj(value: unknown): Dict {
-  return value && typeof value === "object" ? (value as Dict) : {};
+  return value && typeof value === 'object' ? (value as Dict) : {};
 }
 function str(value: unknown): string {
-  return typeof value === "string" ? value : "";
+  return typeof value === 'string' ? value : '';
 }
 function pickEvent(raw: InboundEvent): Dict {
   return Object.keys(obj(raw.event)).length ? obj(raw.event) : (raw as Dict);
@@ -71,6 +74,7 @@ function selectTargetAgent(
 
 export class InboundProcessor {
   private busy = false;
+  private stopped = false;
   private timer: NodeJS.Timeout | null = null;
   private queueDir: string;
   constructor(
@@ -81,7 +85,7 @@ export class InboundProcessor {
     private ops: LarkOps,
     private retryOptions: InboundRetryOptions = {},
   ) {
-    this.queueDir = path.join(config.stateDir, "inbound-queue");
+    this.queueDir = path.join(config.stateDir, 'inbound-queue');
     fs.mkdirSync(this.queueDir, { recursive: true });
   }
 
@@ -96,7 +100,7 @@ export class InboundProcessor {
     if (!messageId || this.dedupe.has(eventId, messageId)) return;
     const file = path.join(
       this.queueDir,
-      `${messageId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`,
+      `${messageId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`,
     );
     const tmp = `${file}.tmp`;
     if (!fs.existsSync(file)) {
@@ -113,16 +117,24 @@ export class InboundProcessor {
     const header = obj(outer.header);
     const eventId = str(header.event_id) || str(outer.event_id);
     if (!eventId || this.dedupe.hasCard(eventId)) return;
-    const file = path.join(this.queueDir, `card-${eventId.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`);
+    const file = path.join(
+      this.queueDir,
+      `card-${eventId.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`,
+    );
     if (!fs.existsSync(file)) {
       const temporary = `${file}.tmp`;
-      fs.writeFileSync(temporary, JSON.stringify({ kind: "card_action", eventId, raw }), { mode: 0o600 });
+      fs.writeFileSync(
+        temporary,
+        JSON.stringify({ kind: 'card_action', eventId, raw }),
+        { mode: 0o600 },
+      );
       fs.renameSync(temporary, file);
     }
     this.kick();
   }
 
   start(): void {
+    this.stopped = false;
     this.kick();
     this.timer = setInterval(
       () => this.kick(),
@@ -130,6 +142,7 @@ export class InboundProcessor {
     );
   }
   stop(): void {
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.threads.save();
   }
@@ -142,15 +155,16 @@ export class InboundProcessor {
     try {
       const files = fs
         .readdirSync(this.queueDir)
-        .filter((n) => n.endsWith(".json") && !n.endsWith(".retry.json"))
+        .filter((n) => n.endsWith('.json') && !n.endsWith('.retry.json'))
         .sort();
       for (const name of files) {
         const file = path.join(this.queueDir, name);
         const retry = this.loadRetry(file);
         if (retry && Date.now() < retry.nextAttemptAt) continue;
         try {
-          const raw = JSON.parse(fs.readFileSync(file, "utf8")) as InboundEvent;
+          const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as InboundEvent;
           await this.process(raw);
+          if (this.stopped) return;
           fs.unlinkSync(file);
           const retryPath = this.retryFile(file);
           if (fs.existsSync(retryPath)) fs.unlinkSync(retryPath);
@@ -159,16 +173,22 @@ export class InboundProcessor {
         }
       }
     } catch (error) {
-      console.error(`[INBOUND] Queue drain failed: ${(error as Error).message}`);
+      console.error(
+        `[INBOUND] Queue drain failed: ${(error as Error).message}`,
+      );
     } finally {
       this.busy = false;
     }
   }
 
   private async process(raw: InboundEvent): Promise<void> {
-    const queued = raw as InboundEvent & { kind?: string; eventId?: string; raw?: unknown };
-    if (queued.kind === "card_action") {
-      await this.processCardAction(queued.raw, queued.eventId || "");
+    const queued = raw as InboundEvent & {
+      kind?: string;
+      eventId?: string;
+      raw?: unknown;
+    };
+    if (queued.kind === 'card_action') {
+      await this.processCardAction(queued.raw, queued.eventId || '');
       return;
     }
     const event = pickEvent(raw);
@@ -183,18 +203,24 @@ export class InboundProcessor {
     const mentionRows = Array.isArray(message.mentions)
       ? message.mentions.map((m) => obj(m))
       : [];
-    const mentions = Object.fromEntries(mentionRows.flatMap((mention) => {
-      const key = str(mention.key);
-      if (!key) return [];
-      const isBot = mention.mentioned_type === "bot" || mention.mentioned_type === "app";
-      const display = str(mention.name) || str(mention.user_name) || key;
-      return [[key, isBot ? "" : `@${display}`], ...(isBot && display ? [[`@${display}`, ""]] : [])];
-    }));
-    if (!id || !openId || str(sender.sender_type) === "app") return;
+    const mentions = Object.fromEntries(
+      mentionRows.flatMap((mention) => {
+        const key = str(mention.key);
+        if (!key) return [];
+        const isBot =
+          mention.mentioned_type === 'bot' || mention.mentioned_type === 'app';
+        const display = str(mention.name) || str(mention.user_name) || key;
+        return [
+          [key, isBot ? '' : `@${display}`],
+          ...(isBot && display ? [[`@${display}`, '']] : []),
+        ];
+      }),
+    );
+    if (!id || !openId || str(sender.sender_type) === 'app') return;
     if (this.dedupe.hasRouted(id)) return;
     const content = str(message.content);
     let normalizedContent = content;
-    if (messageType === "merge_forward" && this.ops.forwardedMessages) {
+    if (messageType === 'merge_forward' && this.ops.forwardedMessages) {
       try {
         if (id) {
           const messages = await this.ops.forwardedMessages(id);
@@ -211,7 +237,7 @@ export class InboundProcessor {
     );
     if (normalized.ignored) return;
     const mentionedBot = mentionRows.some(
-      (m) => m.mentioned_type === "bot" || m.mentioned_type === "app",
+      (m) => m.mentioned_type === 'bot' || m.mentioned_type === 'app',
     );
     const route = resolveSender(
       openId,
@@ -219,10 +245,10 @@ export class InboundProcessor {
       chatType,
       mentionedBot,
     );
-    if (route.kind === "ignore") return;
+    if (route.kind === 'ignore') return;
     if (route.reply) {
       await this.ops.reply(chatId, route.reply, id);
-      logEvent("inbound", `Lark ${route.kind} sender response`, {
+      logEvent('inbound', `Lark ${route.kind} sender response`, {
         subject: messageType,
       });
       return;
@@ -249,8 +275,8 @@ export class InboundProcessor {
       sticky?.agent,
       route.agent,
     );
-    const forwarded = messageType === "merge_forward";
-    const trust = target === route.agent ? "operator" : "external";
+    const forwarded = messageType === 'merge_forward';
+    const trust = target === route.agent ? 'operator' : 'external';
     const messageText = route.admin ? tagged.text : normalized.text;
     const security = sanitizeMessage(
       messageText,
@@ -262,29 +288,30 @@ export class InboundProcessor {
     const larkRootId = str(message.root_id) || null;
     const rootId = larkRootId || parentId || id;
     const safeParentText = parentText
-      ? sanitizeMessage(parentText, route.person, "external", true).sanitized
+      ? sanitizeMessage(parentText, route.person, 'external', true).sanitized
       : null;
     const ampPayload = {
       to: agentAddress(target, this.config.amp.tenant),
       subject: `Lark message from ${route.person}`,
-      priority: "normal",
+      priority: 'normal',
       payload: {
-        type: "request",
+        type: 'request',
         message: security.sanitized,
         attachments: messageData,
         context: {
           channel: {
-            type: "lark",
+            type: 'lark',
             bridge_agent: this.config.amp.agentAddress,
             sender: route.person,
             sender_id: route.person,
-            sender_name: str(sender.sender_name) || str(sender.name) || route.person,
+            sender_name:
+              str(sender.sender_name) || str(sender.name) || route.person,
             chat_id: chatId,
             thread_id: rootId,
             received_at: now,
           },
           lark: {
-            app: "agent",
+            app: 'agent',
             chat_type: chatType,
             chat_id: chatId,
             message_id: id,
@@ -298,23 +325,12 @@ export class InboundProcessor {
             trust: security.trust.level,
             injection_flags: security.flags.map((f) => f.category),
             wrapped: security.wrapped,
-            source: "lark",
+            source: 'lark',
             scanned: true,
           },
         },
       },
     };
-    const response = await fetch(`${this.config.amp.maestroUrl}/api/v1/route`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${this.config.amp.apiKey}`,
-      },
-      body: JSON.stringify(ampPayload),
-      signal: AbortSignal.timeout(this.config.timeoutMs),
-    });
-    if (!response.ok) throw new Error(`AMP route failed (${response.status})`);
-    const result = (await response.json()) as { id?: string };
     const ctx: ThreadContext = {
       messageId: id,
       rootId,
@@ -324,50 +340,78 @@ export class InboundProcessor {
       person: route.person,
       agent: target,
       createdAt: Date.now(),
-      status: "working",
+      status: 'working',
     };
+    // A response can arrive as soon as Maestro accepts the route, before the
+    // HTTP response gives us the AMP id. Key the destination by Lark id too.
     this.threads.set(id, ctx);
+    const response = await fetch(`${this.config.amp.maestroUrl}/api/v1/route`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        authorization: `Bearer ${this.config.amp.apiKey}`,
+      },
+      body: JSON.stringify(ampPayload),
+      signal: AbortSignal.timeout(this.config.timeoutMs),
+    });
+    if (!response.ok) throw new Error(`AMP route failed (${response.status})`);
+    if (this.stopped) return;
+    const result = (await response.json()) as { id?: string };
     if (result.id) this.threads.set(result.id, ctx);
     this.dedupe.markRouted(id);
-    await this.ops.react(id, "THUMBSUP").catch(() => {});
+    await this.ops.react(id, 'THUMBSUP').catch(() => {});
     const progressTimer = setTimeout(() => {
       const current = this.threads.findByRoot(rootId);
-      if (current?.status === "working")
-        void this.ops.reply(chatId, "Still working on it.", id).catch(() => {});
+      if (current?.status === 'working')
+        void this.ops.reply(chatId, 'Still working on it.', id).catch(() => {});
     }, this.config.workingDelayMs);
     progressTimer.unref();
-    logEvent("inbound", `Lark message routed: ${route.person} -> ${target}`, {
+    logEvent('inbound', `Lark message routed: ${route.person} -> ${target}`, {
       from: route.person,
       to: target,
       subject: normalized.text.slice(0, 80),
       ampMessageId: result.id,
-      deliveryStatus: "queued",
+      deliveryStatus: 'queued',
     });
   }
 
-  private async processCardAction(raw: unknown, eventId: string): Promise<void> {
+  private async processCardAction(
+    raw: unknown,
+    eventId: string,
+  ): Promise<void> {
     const outer = obj(raw);
     const event = normalizeCardAction(obj(outer.event || raw) as any);
-    if (!event) throw new Error("Card callback is missing message, chat, or operator identity");
+    if (!event)
+      throw new Error(
+        'Card callback is missing message, chat, or operator identity',
+      );
     const value = obj(event.action.value);
     const owner = str(value.owner);
     const routing = this.getRouting();
     const clicker = authorizeCardAction(event.operator.openId, owner, routing);
-    if (!clicker) throw new Error("Card callback owner authorization failed");
+    if (!clicker) throw new Error('Card callback owner authorization failed');
     const targetAgent = str(value.agent);
-    const ampId = await routeCardAction(this.config, routing, value, clicker, fetch, event.chatId);
-    if (!ampId) throw new Error("AMP card-action route response omitted its message id");
+    const ampId = await routeCardAction(
+      this.config,
+      routing,
+      value,
+      clicker,
+      fetch,
+      event.chatId,
+    );
+    if (!ampId)
+      throw new Error('AMP card-action route response omitted its message id');
     const person = routing.people[clicker];
     const context: ThreadContext = {
       messageId: event.messageId,
       rootId: event.messageId,
       chatId: event.chatId,
-      chatType: "p2p",
+      chatType: 'p2p',
       openId: person.open_id,
       person: clicker,
       agent: targetAgent,
       createdAt: Date.now(),
-      status: "working",
+      status: 'working',
     };
     this.threads.set(event.messageId, context);
     this.threads.set(ampId, context);
@@ -382,7 +426,7 @@ export class InboundProcessor {
     if (message.attachments.length > 10) {
       await this.ops.reply(
         chatId,
-        "This message has more than the 10 attachment limit. Please send fewer files.",
+        'This message has more than the 10 attachment limit. Please send fewer files.',
         messageId,
       );
       return null;
@@ -404,7 +448,7 @@ export class InboundProcessor {
       }
       const reference = await uploadAmpAttachment(this.config, {
         name: sanitizeAttachmentFilename(item.name, item.key),
-        content_type: downloaded.contentType || "application/octet-stream",
+        content_type: downloaded.contentType || 'application/octet-stream',
         bytes: downloaded.bytes,
       });
       result.push(reference);
@@ -419,7 +463,7 @@ export class InboundProcessor {
   private loadRetry(file: string): InboundRetry | undefined {
     try {
       return JSON.parse(
-        fs.readFileSync(this.retryFile(file), "utf8"),
+        fs.readFileSync(this.retryFile(file), 'utf8'),
       ) as InboundRetry;
     } catch {
       return undefined;
@@ -450,12 +494,16 @@ export class InboundProcessor {
     const baseDelayMs =
       this.retryOptions.baseDelayMs ?? this.config.pollIntervalMs;
     const ageMs = now - retry.firstFailedAt;
-    const permanent = /(?:AMP route failed|API failed) \((?:400|401|403|404|413)\)/.test((error as Error).message || "");
+    const permanent =
+      /(?:AMP route failed|API failed) \((?:400|401|403|404|413)\)/.test(
+        (error as Error).message || '',
+      );
     if (permanent || retry.attempts >= maxAttempts || ageMs >= maxAgeMs) {
       await this.parkInbound(file, name, error);
       return;
     }
-    retry.nextAttemptAt = now + Math.min(baseDelayMs * 2 ** (retry.attempts - 1), 5 * 60 * 1000);
+    retry.nextAttemptAt =
+      now + Math.min(baseDelayMs * 2 ** (retry.attempts - 1), 5 * 60 * 1000);
     this.saveRetry(file, retry);
     console.error(
       `[INBOUND] ${name} failed on attempt ${retry.attempts}; retrying in ${Math.ceil((retry.nextAttemptAt - now) / 1000)}s: ${(error as Error).message}`,
@@ -467,19 +515,21 @@ export class InboundProcessor {
     name: string,
     error: unknown,
   ): Promise<void> {
-    const targetDir = path.join(this.config.stateDir, "undeliverable-inbound");
+    const targetDir = path.join(this.config.stateDir, 'undeliverable-inbound');
     fs.mkdirSync(targetDir, { recursive: true });
     const target = path.join(targetDir, name);
     try {
       fs.renameSync(file, target);
     } catch (renameError) {
-      console.error(`[INBOUND] Could not park ${name}: ${(renameError as Error).message}`);
+      console.error(
+        `[INBOUND] Could not park ${name}: ${(renameError as Error).message}`,
+      );
       return;
     }
     const retryPath = this.retryFile(file);
     if (fs.existsSync(retryPath))
       fs.renameSync(retryPath, `${target}.retry.json`);
-    logEvent("error", "Inbound Lark message parked", {
+    logEvent('error', 'Inbound Lark message parked', {
       subject: name,
       error: (error as Error).message,
     });
@@ -487,11 +537,13 @@ export class InboundProcessor {
       `[INBOUND] ${name} parked after repeated failure: ${(error as Error).message}`,
     );
     try {
-      const raw = JSON.parse(fs.readFileSync(target, "utf8")) as InboundEvent;
+      const raw = JSON.parse(fs.readFileSync(target, 'utf8')) as InboundEvent;
       const queued = raw as InboundEvent & { kind?: string; raw?: unknown };
-      if (queued.kind === "card_action") {
+      if (queued.kind === 'card_action') {
         const outer = obj(queued.raw);
-        const event = normalizeCardAction(obj(outer.event || queued.raw) as any);
+        const event = normalizeCardAction(
+          obj(outer.event || queued.raw) as any,
+        );
         if (event) {
           await this.ops.reply(
             event.chatId,
@@ -504,12 +556,12 @@ export class InboundProcessor {
       const event = pickEvent(raw);
       const message = obj(event.message);
       if (
-        typeof message.chat_id === "string" &&
-        typeof message.message_id === "string"
+        typeof message.chat_id === 'string' &&
+        typeof message.message_id === 'string'
       ) {
         await this.ops.reply(
           message.chat_id,
-          "I could not deliver this message to your AI Maestro agent. Please try again later or contact an administrator.",
+          'I could not deliver this message to your AI Maestro agent. Please try again later or contact an administrator.',
           message.message_id,
         );
       }

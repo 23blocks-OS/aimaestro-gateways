@@ -1,6 +1,6 @@
 /** Persists event, message, and card action deduplication state. */
-import fs from "node:fs";
-import path from "node:path";
+import fs from 'node:fs';
+import path from 'node:path';
 
 const TTL_MS = 24 * 60 * 60 * 1000;
 export class DedupeStore {
@@ -13,7 +13,7 @@ export class DedupeStore {
   }
   private load(): void {
     try {
-      const data = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Record<
+      const data = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as Record<
         string,
         number
       >;

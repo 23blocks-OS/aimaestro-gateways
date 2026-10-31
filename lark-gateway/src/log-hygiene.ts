@@ -16,28 +16,28 @@ export function errLine(err: unknown): string {
   let text: string;
   if (err === null || err === undefined) {
     text = String(err);
-  } else if (typeof err === "string") {
+  } else if (typeof err === 'string') {
     text = err;
-  } else if (typeof err === "object") {
+  } else if (typeof err === 'object') {
     const e = err as {
       message?: unknown;
       data?: { error?: unknown };
       code?: unknown;
     };
     const parts: string[] = [];
-    if (typeof e.message === "string" && e.message) parts.push(e.message);
-    if (typeof e.data?.error === "string" && e.data.error)
+    if (typeof e.message === 'string' && e.message) parts.push(e.message);
+    if (typeof e.data?.error === 'string' && e.data.error)
       parts.push(`lark=${e.data.error}`);
-    if (e.code !== undefined && e.code !== null && e.code !== "")
+    if (e.code !== undefined && e.code !== null && e.code !== '')
       parts.push(`code=${String(e.code)}`);
     text =
       parts.length > 0
-        ? parts.join(" | ")
+        ? parts.join(' | ')
         : Object.prototype.toString.call(err);
   } else {
     text = String(err);
   }
-  text = text.replace(/\s+/g, " ").trim();
+  text = text.replace(/\s+/g, ' ').trim();
   return text.length > MAX_ERR_LINE
     ? `${text.slice(0, MAX_ERR_LINE - 3)}...`
     : text;
@@ -45,8 +45,8 @@ export function errLine(err: unknown): string {
 
 /** Truncate untrusted text for logging, flattening whitespace. */
 export function clip(text: unknown, max = 80): string {
-  const s = String(text ?? "")
-    .replace(/\s+/g, " ")
+  const s = String(text ?? '')
+    .replace(/\s+/g, ' ')
     .trim();
   return s.length > max ? `${s.slice(0, max - 3)}...` : s;
 }

@@ -1,9 +1,9 @@
 /** Tests retry backoff and terminal parking decisions. */
-import test from "node:test";
-import assert from "node:assert/strict";
-import { backoffMs, shouldPark } from "../retry-policy.js";
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { backoffMs, shouldPark } from '../retry-policy.js';
 
-test("outbound retries cap exponential backoff and park only after both bounds", () => {
+test('outbound retries cap exponential backoff and park only after both bounds', () => {
   assert.equal(backoffMs(1, 3000), 3000);
   assert.equal(backoffMs(9, 3000), 300000);
   assert.equal(shouldPark(19, 24 * 60 * 60 * 1000), false);

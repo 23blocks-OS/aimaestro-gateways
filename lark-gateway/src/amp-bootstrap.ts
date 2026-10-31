@@ -6,16 +6,16 @@
  * and persists everything to ~/.agent-messaging/ and the .env file.
  */
 
-import * as crypto from "crypto";
-import * as fs from "fs";
-import * as path from "path";
+import * as crypto from 'crypto';
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   AmpRegistrationError,
   OrganizationNotSetError,
   discoverTenant,
   registerWithTenantFallback,
   retryWhileOrganizationNotSet,
-} from "./amp-tenant.js";
+} from './amp-tenant.js';
 
 export interface BootstrapOptions {
   agentName: string;
@@ -38,9 +38,9 @@ export interface BootstrapResult {
  * Generate an Ed25519 key pair using Node.js crypto.
  */
 function generateKeyPair(): { publicKeyPem: string; privateKeyPem: string } {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519", {
-    publicKeyEncoding: { type: "spki", format: "pem" },
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519', {
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
   });
   return { publicKeyPem: publicKey, privateKeyPem: privateKey };
 }
@@ -62,13 +62,13 @@ async function registerAgent(
   tenant: string;
 }> {
   const resp = await fetch(`${maestroUrl}/api/v1/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       tenant,
       name,
       public_key: publicKeyPem,
-      key_algorithm: "Ed25519",
+      key_algorithm: 'Ed25519',
       alias,
       metadata,
     }),
@@ -97,32 +97,32 @@ function saveAgentFiles(
   privateKeyPem: string,
 ): string {
   const agentDir = path.join(
-    process.env.HOME || "/root",
-    ".agent-messaging",
-    "agents",
+    process.env.HOME || '/root',
+    '.agent-messaging',
+    'agents',
     agentName,
   );
-  const keysDir = path.join(agentDir, "keys");
-  const msgsDir = path.join(agentDir, "messages");
-  const inboxDir = path.join(msgsDir, "inbox");
-  const sentDir = path.join(msgsDir, "sent");
-  const regDir = path.join(agentDir, "registrations");
+  const keysDir = path.join(agentDir, 'keys');
+  const msgsDir = path.join(agentDir, 'messages');
+  const inboxDir = path.join(msgsDir, 'inbox');
+  const sentDir = path.join(msgsDir, 'sent');
+  const regDir = path.join(agentDir, 'registrations');
 
   for (const dir of [keysDir, inboxDir, sentDir, regDir]) {
     fs.mkdirSync(dir, { recursive: true });
   }
 
   // Save keys
-  fs.writeFileSync(path.join(keysDir, "public.pem"), publicKeyPem, {
+  fs.writeFileSync(path.join(keysDir, 'public.pem'), publicKeyPem, {
     mode: 0o644,
   });
-  fs.writeFileSync(path.join(keysDir, "private.pem"), privateKeyPem, {
+  fs.writeFileSync(path.join(keysDir, 'private.pem'), privateKeyPem, {
     mode: 0o600,
   });
 
   // Save config
   fs.writeFileSync(
-    path.join(agentDir, "config.json"),
+    path.join(agentDir, 'config.json'),
     JSON.stringify(
       {
         name: agentName,
@@ -162,15 +162,15 @@ function saveAgentFiles(
  */
 function updateIndex(agentName: string): void {
   const agentsDir = path.join(
-    process.env.HOME || "/root",
-    ".agent-messaging",
-    "agents",
+    process.env.HOME || '/root',
+    '.agent-messaging',
+    'agents',
   );
-  const indexPath = path.join(agentsDir, ".index.json");
+  const indexPath = path.join(agentsDir, '.index.json');
 
   let index: Record<string, string> = {};
   try {
-    index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+    index = JSON.parse(fs.readFileSync(indexPath, 'utf-8'));
   } catch {
     // New index
   }
@@ -196,15 +196,15 @@ function persistToEnv(
     AMP_INBOX_DIR: inboxDir,
   };
 
-  let content = "";
+  let content = '';
   try {
-    content = fs.readFileSync(envFile, "utf-8");
+    content = fs.readFileSync(envFile, 'utf-8');
   } catch {
     // File doesn't exist yet
   }
 
   for (const [key, value] of Object.entries(vars)) {
-    const regex = new RegExp(`^${key}=.*$`, "m");
+    const regex = new RegExp(`^${key}=.*$`, 'm');
     if (regex.test(content)) {
       content = content.replace(regex, `${key}=${value}`);
     } else {
@@ -223,13 +223,13 @@ export async function bootstrapAMP(
   options: BootstrapOptions,
 ): Promise<BootstrapResult> {
   console.log(
-    "[BOOTSTRAP] No AMP_API_KEY found — starting auto-registration...",
+    '[BOOTSTRAP] No AMP_API_KEY found — starting auto-registration...',
   );
   console.log(`[BOOTSTRAP] Agent: ${options.agentName}`);
   console.log(`[BOOTSTRAP] Maestro: ${options.maestroUrl}`);
 
   const { publicKeyPem, privateKeyPem } = generateKeyPair();
-  console.log("[BOOTSTRAP] Generated Ed25519 key pair");
+  console.log('[BOOTSTRAP] Generated Ed25519 key pair');
 
   // Tenant: AMP_TENANT when set (explicit override), otherwise the AI Maestro
   // organization. A wrong guess is corrected once from the server's answer, and
@@ -242,9 +242,9 @@ export async function bootstrapAMP(
       const found = await discoverTenant(options.maestroUrl);
       if (found.organizationUnset)
         throw new OrganizationNotSetError(options.maestroUrl);
-      wanted = found.tenant || "default";
+      wanted = found.tenant || 'default';
       console.log(
-        `[BOOTSTRAP] Discovered tenant: ${wanted}${found.source ? ` (from ${found.source})` : " (no organization reported, trying default)"}`,
+        `[BOOTSTRAP] Discovered tenant: ${wanted}${found.source ? ` (from ${found.source})` : ' (no organization reported, trying default)'}`,
       );
     }
     const registered = await registerWithTenantFallback(
@@ -265,7 +265,7 @@ export async function bootstrapAMP(
     );
     return registered;
   });
-  const domain = result.address.split("@")[1] || `${tenant}.aimaestro.local`;
+  const domain = result.address.split('@')[1] || `${tenant}.aimaestro.local`;
 
   // 4. Save files
   const inboxDir = saveAgentFiles(
@@ -292,7 +292,7 @@ export async function bootstrapAMP(
     inboxDir,
   );
 
-  console.log("[BOOTSTRAP] Auto-registration complete!");
+  console.log('[BOOTSTRAP] Auto-registration complete!');
 
   return {
     apiKey: result.api_key,

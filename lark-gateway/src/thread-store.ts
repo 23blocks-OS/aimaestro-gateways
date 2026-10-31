@@ -1,7 +1,7 @@
 /** Persists Lark message-to-agent context with expiry and size limits. */
-import fs from "node:fs";
-import path from "node:path";
-import type { ThreadContext } from "./types.js";
+import fs from 'node:fs';
+import path from 'node:path';
+import type { ThreadContext } from './types.js';
 
 /** Persist Lark message-to-agent context and evict old or oversized state. */
 export class ThreadStore {
@@ -16,7 +16,15 @@ export class ThreadStore {
     pruneIntervalMs = 60 * 60 * 1000,
   ) {
     this.load();
-    this.pruneTimer = setInterval(() => this.pruneNow(), pruneIntervalMs);
+    this.pruneTimer = setInterval(() => {
+      try {
+        this.pruneNow();
+      } catch (error) {
+        console.error(
+          `[THREAD STORE] Periodic prune failed: ${(error as Error).message}`,
+        );
+      }
+    }, pruneIntervalMs);
     this.pruneTimer.unref();
   }
 
@@ -41,7 +49,7 @@ export class ThreadStore {
     );
   }
 
-  updateStatus(rootId: string, status: "working" | "done"): void {
+  updateStatus(rootId: string, status: 'working' | 'done'): void {
     for (const context of this.entries.values()) {
       if (context.rootId === rootId) context.status = status;
     }
@@ -76,7 +84,7 @@ export class ThreadStore {
   private load(): void {
     let changed = false;
     try {
-      const data = JSON.parse(fs.readFileSync(this.filePath, "utf8")) as Record<
+      const data = JSON.parse(fs.readFileSync(this.filePath, 'utf8')) as Record<
         string,
         ThreadContext
       >;

@@ -1,61 +1,61 @@
 /** Starts the management API, Lark event connection, and gateway workers. */
-import fs from "node:fs";
-import path from "node:path";
-import { timingSafeEqual } from "node:crypto";
+import fs from 'node:fs';
+import path from 'node:path';
+import { timingSafeEqual } from 'node:crypto';
 import express, {
   type NextFunction,
   type Request,
   type Response,
-} from "express";
+} from 'express';
 import {
   adaptExpress,
   Client,
   Domain,
   CardActionHandler,
   WSClient,
-} from "@larksuiteoapi/node-sdk";
-import { hasLiveCredentials, loadConfig, loadRoutingFile } from "./config.js";
+} from '@larksuiteoapi/node-sdk';
+import { hasLiveCredentials, loadConfig, loadRoutingFile } from './config.js';
 import {
   resolveBindAddress,
   exposureWarning,
   formatHttpUrl,
-} from "./bind-address.js";
-import { DedupeStore } from "./dedupe.js";
-import { ThreadStore } from "./thread-store.js";
-import { InboundProcessor } from "./inbound.js";
-import { createLarkEventDispatcher } from "./event-dispatcher.js";
-import { LarkApi } from "./lark-api.js";
-import { OutboundPoller } from "./outbound.js";
-import { createCardActionHandler } from "./card-actions.js";
-import { createActivityRouter } from "./api/activity-api.js";
-import { createStatsRouter } from "./api/stats-api.js";
-import { logEvent } from "./api/activity-log.js";
-import { larkLogger } from "./lark-logger.js";
-import type { RoutingConfig } from "./types.js";
+} from './bind-address.js';
+import { DedupeStore } from './dedupe.js';
+import { ThreadStore } from './thread-store.js';
+import { InboundProcessor } from './inbound.js';
+import { createLarkEventDispatcher } from './event-dispatcher.js';
+import { LarkApi } from './lark-api.js';
+import { OutboundPoller } from './outbound.js';
+import { createCardActionHandler } from './card-actions.js';
+import { createActivityRouter } from './api/activity-api.js';
+import { createStatsRouter } from './api/stats-api.js';
+import { logEvent } from './api/activity-log.js';
+import { larkLogger } from './lark-logger.js';
+import type { RoutingConfig } from './types.js';
 
 function auth(token: string) {
   return (req: Request, res: Response, next: NextFunction) => {
     if (!token)
       return res
         .status(403)
-        .json({ error: "ADMIN_TOKEN is required for management API access" });
-    const value = req.headers.authorization || "";
+        .json({ error: 'ADMIN_TOKEN is required for management API access' });
+    const value = req.headers.authorization || '';
     const expected = `Bearer ${token}`;
     if (
       value.length === expected.length &&
       timingSafeEqual(Buffer.from(value), Buffer.from(expected))
     )
       return next();
-    return res.status(401).json({ error: "Unauthorized" });
+    return res.status(401).json({ error: 'Unauthorized' });
   };
 }
 
 function emptyRouting(): RoutingConfig {
   return {
     people: {},
-    default_reply_unknown: "This bot is not configured for your account.",
-    disabled_person: "This agent is paused.",
-    group_pointer: "Please DM this bot.",
+    default_reply_unknown: 'This bot is not configured for your account.',
+    disabled_person: 'This agent is paused.',
+    group_pointer: 'Please DM this bot.',
     tenant: undefined,
   };
 }
@@ -63,9 +63,9 @@ async function main(): Promise<void> {
   const config = await loadConfig();
   fs.mkdirSync(config.stateDir, { recursive: true });
   const threads = new ThreadStore(
-    path.join(config.stateDir, "thread-store.json"),
+    path.join(config.stateDir, 'thread-store.json'),
   );
-  const dedupe = new DedupeStore(path.join(config.stateDir, "dedupe.json"));
+  const dedupe = new DedupeStore(path.join(config.stateDir, 'dedupe.json'));
   let routing: RoutingConfig = emptyRouting();
   try {
     routing = loadRoutingFile(config.routingFile);
@@ -79,7 +79,7 @@ async function main(): Promise<void> {
       return;
     try {
       routing = loadRoutingFile(config.routingFile);
-      console.log("[CONFIG] routing.yaml reloaded");
+      console.log('[CONFIG] routing.yaml reloaded');
     } catch (error) {
       console.error(
         `[CONFIG] Routing reload rejected; keeping previous config: ${(error as Error).message}`,
@@ -88,19 +88,19 @@ async function main(): Promise<void> {
   });
 
   const app = express();
-  app.use(express.json({ limit: "1mb" }));
-  app.get("/health", (_req, res) =>
+  app.use(express.json({ limit: '1mb' }));
+  app.get('/health', (_req, res) =>
     res.json({
-      status: "ok",
-      service: "lark-gateway",
-      protocol: "AMP",
+      status: 'ok',
+      service: 'lark-gateway',
+      protocol: 'AMP',
       configured: hasLiveCredentials(config),
       threads: threads.size(),
       timestamp: new Date().toISOString(),
     }),
   );
-  app.use("/api", auth(config.adminToken));
-  app.get("/api/config", (_req, res) =>
+  app.use('/api', auth(config.adminToken));
+  app.get('/api/config', (_req, res) =>
     res.json({
       port: config.port,
       bindAddress: config.bindAddress,
@@ -109,7 +109,7 @@ async function main(): Promise<void> {
         longConnection: true,
         cardCallbackMode: config.cardCallbackMode,
         cardCallbackConfigured:
-          config.cardCallbackMode === "long-connection" ||
+          config.cardCallbackMode === 'long-connection' ||
           Boolean(config.verificationToken),
       },
       amp: {
@@ -126,7 +126,7 @@ async function main(): Promise<void> {
     }),
   );
   app.use(
-    "/api/stats",
+    '/api/stats',
     createStatsRouter(
       () =>
         ({
@@ -139,7 +139,7 @@ async function main(): Promise<void> {
         }) as any,
     ),
   );
-  app.use("/api/activity", createActivityRouter());
+  app.use('/api/activity', createActivityRouter());
   const bind = resolveBindAddress({ BIND_ADDRESS: config.bindAddress });
   const warning = exposureWarning(bind, config.adminToken);
   if (warning) console.warn(warning);
@@ -150,9 +150,9 @@ async function main(): Promise<void> {
   const credsMissing = !hasLiveCredentials(config);
   if (credsMissing) {
     const callbackHint =
-      config.cardCallbackMode === "http"
-        ? ", LARK_VERIFICATION_TOKEN (HTTP callback mode)"
-        : "";
+      config.cardCallbackMode === 'http'
+        ? ', LARK_VERIFICATION_TOKEN (HTTP callback mode)'
+        : '';
     console.error(
       `[CONFIG ERROR] Lark gateway is in health-only mode. Set LARK_APP_ID, LARK_APP_SECRET${callbackHint}, AMP_API_KEY (or AMP_AUTO_REGISTER=true), then restart.`,
     );
@@ -162,13 +162,15 @@ async function main(): Promise<void> {
   try {
     fs.chmodSync(config.amp.inboxDir, 0o700);
   } catch (error) {
-    console.error(`[CONFIG] Could not secure AMP inbox directory permissions: ${(error as Error).message}`);
+    console.error(
+      `[CONFIG] Could not secure AMP inbox directory permissions: ${(error as Error).message}`,
+    );
   }
   if (!fs.existsSync(config.routingFile))
     console.warn(
       `[CONFIG] No routing file at ${config.routingFile}; DM senders receive the configured unknown-sender response.`,
     );
-  const domain = config.domain === "feishu" ? Domain.Feishu : Domain.Lark;
+  const domain = config.domain === 'feishu' ? Domain.Feishu : Domain.Lark;
   const client = new Client({
     appId: config.appId,
     appSecret: config.appSecret,
@@ -181,9 +183,9 @@ async function main(): Promise<void> {
     domain,
     autoReconnect: true,
     logger: larkLogger,
-    onReady: () => console.log("[LARK] Long connection ready"),
-    onReconnecting: () => console.warn("[LARK] Long connection reconnecting"),
-    onReconnected: () => console.log("[LARK] Long connection restored"),
+    onReady: () => console.log('[LARK] Long connection ready'),
+    onReconnecting: () => console.warn('[LARK] Long connection reconnecting'),
+    onReconnected: () => console.log('[LARK] Long connection restored'),
     onError: (e) => console.error(`[LARK] Connection error: ${e.message}`),
   });
   const lark = new LarkApi(client, config);
@@ -205,9 +207,9 @@ async function main(): Promise<void> {
   );
   const dispatcher = createLarkEventDispatcher(
     inbound,
-    config.cardCallbackMode === "long-connection" ? onCardAction : undefined,
+    config.cardCallbackMode === 'long-connection' ? onCardAction : undefined,
   );
-  if (config.cardCallbackMode === "http") {
+  if (config.cardCallbackMode === 'http') {
     const cardDispatcher = new CardActionHandler(
       {
         verificationToken: config.verificationToken,
@@ -217,23 +219,23 @@ async function main(): Promise<void> {
       onCardAction,
     );
     app.use(
-      "/lark/callback",
+      '/lark/callback',
       adaptExpress(cardDispatcher, { autoChallenge: true, logger: larkLogger }),
     );
     console.log(
-      "[LARK] Card callbacks use the opt-in HTTP endpoint /lark/callback",
+      '[LARK] Card callbacks use the opt-in HTTP endpoint /lark/callback',
     );
   } else {
     console.log(
-      "[LARK] Card callbacks use the persistent connection; no callback ingress is required",
+      '[LARK] Card callbacks use the persistent connection; no callback ingress is required',
     );
   }
   await ws.start({ eventDispatcher: dispatcher });
   const poller = new OutboundPoller(config, () => routing, threads, lark);
   poller.start();
-  logEvent("inbound", "Lark gateway started");
+  logEvent('inbound', 'Lark gateway started');
   console.log(
-    "Lark gateway ready: DMs are routed by routing.yaml; group messages are ignored unless they mention the bot.",
+    'Lark gateway ready: DMs are routed by routing.yaml; group messages are ignored unless they mention the bot.',
   );
   let closing = false;
   const shutdown = async (signal: string) => {
@@ -246,8 +248,8 @@ async function main(): Promise<void> {
     threads.close();
     server.close();
   };
-  process.on("SIGTERM", () => void shutdown("SIGTERM"));
-  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
 main().catch((error) => {
