@@ -53,7 +53,7 @@ function postText(content: Content): { text: string; images: string[] } {
 export function normalizeMessage(
   messageType: string,
   raw: string,
-  mentionTokens: string[] = [],
+  mentionTokens: string[] | Record<string, string> = [],
 ): NormalizedMessage {
   let content: Content = {};
   try {
@@ -119,8 +119,11 @@ export function normalizeMessage(
         ignored: false,
       };
   }
-  for (const token of mentionTokens)
-    if (token) text = text.replaceAll(token, "");
+  const replacements = Array.isArray(mentionTokens)
+    ? Object.fromEntries(mentionTokens.map((token) => [token, ""]))
+    : mentionTokens;
+  for (const [token, replacement] of Object.entries(replacements))
+    if (token) text = text.replaceAll(token, replacement);
   text = text.replace(/\s+/g, " ").trim();
   return { text, attachments, ignored: false };
 }

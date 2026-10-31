@@ -34,7 +34,7 @@ export interface OutboundOps {
     attachment: unknown,
     uuid?: string,
   ): Promise<void>;
-  finishReaction(messageId: string): Promise<void>;
+  finishReaction(messageId: string, emoji?: string): Promise<void>;
 }
 type Button = { label: string; action: string; value?: unknown };
 class UndeliverableError extends Error {}
@@ -112,17 +112,15 @@ export class OutboundPoller {
     this.running = true;
     try {
       fs.mkdirSync(this.config.amp.inboxDir, { recursive: true });
-      for (const name of fs
-        .readdirSync(this.config.amp.inboxDir)
-        .filter((n) => n.endsWith(".json"))
-        .sort()) {
-        const file = path.join(this.config.amp.inboxDir, name);
+      for (const file of this.scanInbox()) {
+        const name = path.basename(file);
         const retry = this.retries.get(file);
         if (retry && Date.now() < retry.next) continue;
         try {
           const msg = JSON.parse(fs.readFileSync(file, "utf8")) as AMPMessage;
-          await this.deliver(msg);
+          await this.deliver(msg, file);
           fs.unlinkSync(file);
+          try { fs.unlinkSync(`${file}.progress.json`); } catch { /* absent checkpoint */ }
           this.retries.delete(file);
         } catch (error) {
           if (error instanceof UndeliverableError) {
@@ -135,23 +133,88 @@ export class OutboundPoller {
           console.error(
             `[OUTBOUND] ${path.basename(file)} attempt ${n}: ${errLine(error)}`,
           );
-          if (shouldPark(n, Date.now() - fs.statSync(file).mtimeMs))
-            this.park(file, error);
+          try {
+            if (shouldPark(n, Date.now() - fs.statSync(file).mtimeMs))
+              this.park(file, error);
+          } catch (parkError) {
+            console.error(`[OUTBOUND] Could not park ${name}: ${errLine(parkError)}`);
+          }
         }
       }
+    } catch (error) {
+      console.error(`[OUTBOUND] Inbox poll failed: ${errLine(error)}`);
     } finally {
       this.running = false;
     }
   }
+
+  /** AMP stores each sender's messages in its own directory. */
+  private scanInbox(): string[] {
+    const files: string[] = [];
+    const now = Date.now();
+    for (const entry of fs.readdirSync(this.config.amp.inboxDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const senderDir = path.join(this.config.amp.inboxDir, entry.name);
+      let children: string[];
+      try {
+        children = fs.readdirSync(senderDir);
+      } catch (error) {
+        console.error(`[OUTBOUND] Cannot read sender directory ${entry.name}: ${errLine(error)}`);
+        continue;
+      }
+      files.push(...children.filter((name) => name.endsWith(".json") && !name.endsWith(".progress.json") && !name.endsWith(".retry.json")).map((name) => path.join(senderDir, name)));
+      if (children.length === 0) {
+        try {
+          const stat = fs.statSync(senderDir);
+          if (now - stat.mtimeMs > 60_000) fs.rmdirSync(senderDir);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+            console.error(`[OUTBOUND] Could not clean empty sender directory ${entry.name}: ${errLine(error)}`);
+        }
+      }
+    }
+    return files.sort();
+  }
   private park(file: string, error: unknown): void {
     fs.mkdirSync(this.undeliverable, { recursive: true });
     fs.renameSync(file, path.join(this.undeliverable, path.basename(file)));
+    try { fs.renameSync(`${file}.progress.json`, path.join(this.undeliverable, `${path.basename(file)}.progress.json`)); } catch { /* absent checkpoint */ }
     this.retries.delete(file);
     const reason = errLine(error);
     console.error(`[OUTBOUND] ${path.basename(file)} parked: ${reason}`);
     logEvent("error", "Outbound Lark message parked", { error: reason });
+    try {
+      const message = JSON.parse(fs.readFileSync(path.join(this.undeliverable, path.basename(file)), "utf8")) as AMPMessage;
+      const replyId = String(message.envelope?.in_reply_to || "");
+      const stored = replyId ? this.threads.get(replyId) : undefined;
+      const lark = object(object(message.payload?.context).lark);
+      const personKey = typeof lark.to === "string" ? lark.to : "";
+      const person = personKey ? this.routing().people[personKey] : undefined;
+      const chatId = stored?.chatId || stored?.openId || person?.open_id;
+      const parentId = stored?.messageId || undefined;
+      if (chatId)
+        void this.ops.reply(chatId, "Your agent's reply could not be delivered. Please try again later or contact an administrator.", parentId)
+          .catch((replyError) => console.error(`[OUTBOUND] Could not notify Lark recipient: ${errLine(replyError)}`));
+    } catch (notifyError) {
+      console.error(`[OUTBOUND] Could not prepare undeliverable notice: ${errLine(notifyError)}`);
+    }
   }
-  private async deliver(message: AMPMessage): Promise<void> {
+  private async deliver(message: AMPMessage, file: string): Promise<void> {
+    const progressFile = `${file}.progress.json`;
+    let completed = new Set<string>();
+    try { completed = new Set(JSON.parse(fs.readFileSync(progressFile, "utf8")) as string[]); } catch { /* first delivery */ }
+    const sendPart = async (key: string, send: () => Promise<void>) => {
+      if (completed.has(key)) return;
+      try { await send(); }
+      catch (error) {
+        const text = errLine(error);
+        if (/Lark API (?:400|2300\d{2}|2300\d{3})|invalid (?:content|param)|too large|card.*(?:invalid|size)/i.test(text))
+          throw new UndeliverableError(text);
+        throw error;
+      }
+      completed.add(key);
+      fs.writeFileSync(progressFile, JSON.stringify([...completed]), { mode: 0o600 });
+    };
     const ctx = object(message.payload?.context);
     const lark = object(ctx.lark);
     const replyId = String(message.envelope?.in_reply_to || "");
@@ -197,40 +260,36 @@ export class OutboundPoller {
     const buttons = Array.isArray(larkContext.buttons)
       ? (larkContext.buttons as Button[])
       : [];
+    if (buttons.some((button) => typeof button?.label !== "string" || typeof button?.action !== "string"))
+      throw new UndeliverableError("Invalid Lark card button: label and action must be strings");
     let sentMessageId = "";
     if (text) {
       if (
         format === "card" ||
         (format !== "text" && (looksStructured(text) || buttons.length))
       ) {
-        const chunks = splitMessageBytes(text, 25000);
+        // Reserve room for JSON escaping and the rest of the card structure.
+        const chunks = splitMessageBytes(text, 4000);
         for (let i = 0; i < chunks.length; i++)
-          sentMessageId = await this.ops.sendCard(
-            chatId,
-            buildCard(
-              chunks[i],
-              i === chunks.length - 1 ? buttons : [],
-              direct.person,
-              direct.agent,
-              replyId || String(message.envelope?.id || ""),
-            ),
-            parent,
-            deliveryUuid(String(message.envelope?.id || replyId), `card-${i}`),
-          );
+          await sendPart(`card-${i}`, async () => {
+            sentMessageId = await this.ops.sendCard(
+              chatId,
+              buildCard(chunks[i], i === chunks.length - 1 ? buttons : [], direct.person, direct.agent, replyId || String(message.envelope?.id || "")),
+              parent,
+              deliveryUuid(String(message.envelope?.id || replyId), `card-${i}`),
+            );
+          });
       } else {
         const chunks = splitMessage(text, 3500);
         for (let i = 0; i < chunks.length; i++)
-          sentMessageId = await this.ops.sendText(
-            chatId,
-            chunks[i],
-            parent,
-            deliveryUuid(String(message.envelope?.id || replyId), `text-${i}`),
-          );
+          await sendPart(`text-${i}`, async () => {
+            sentMessageId = await this.ops.sendText(chatId, chunks[i], parent, deliveryUuid(String(message.envelope?.id || replyId), `text-${i}`));
+          });
       }
     }
     const attachments = message.payload?.attachments || [];
     for (let i = 0; i < attachments.length; i++)
-      await this.ops.sendAttachment(
+      await sendPart(`attachment-${i}`, () => this.ops.sendAttachment(
         chatId,
         parent,
         attachments[i],
@@ -238,9 +297,12 @@ export class OutboundPoller {
           String(message.envelope?.id || replyId),
           `attachment-${i}`,
         ),
-      );
+      ));
     if (parent) {
-      await this.ops.finishReaction(parent).catch(() => {});
+      const reactionDone = typeof larkContext.reaction_done === "string"
+        ? larkContext.reaction_done
+        : "DONE";
+      await this.ops.finishReaction(parent, reactionDone).catch(() => {});
       this.threads.updateStatus(direct.rootId, "done");
     }
     if (!stored && message.envelope?.id) {

@@ -72,6 +72,8 @@ Messages from a person assigned to the target agent are operator-trusted. Other 
 
 Outbound delivery is owner-checked. A reply to a stored Lark thread is accepted only from the exact AMP agent recorded on that thread. An agent-initiated DM using `context.lark.to` is accepted only from the agent configured for that person in `routing.yaml`, compared by full AMP address (agent name plus tenant). Unauthorized or unresolved messages are parked in `undeliverable/` with a reason; the gateway never lets one agent message another person's Lark DM.
 
+AMP inbox files are read from sender-owned subdirectories, but AI Maestro's public AMP address lookup does not expose a sender public key for signature verification. The gateway therefore secures its inbox directory with mode `0700`; run it as a dedicated OS user or container with its own inbox volume, and do not share that writable inbox with untrusted processes. This filesystem trust limitation is shared by the sibling gateways.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -108,7 +110,7 @@ The inbound event is durably queued before acknowledgement. Event and message ID
 
 ## Docker
 
-Copy `routing.example.yaml` to `routing.yaml`, configure `.env`, then run `docker compose up -d lark-gateway`. Compose publishes `127.0.0.1:3025` and mounts the host `~/.agent-messaging` directory into the container so the outbound AMP inbox can be read and consumed. The image binds inside its container to `0.0.0.0`; keep the host port mapping loopback-only unless intentionally exposing the management API with `ADMIN_TOKEN` set.
+Copy `routing.example.yaml` to `config/routing.yaml`, configure `.env`, and set `LARK_GATEWAY_UID` and `LARK_GATEWAY_GID` to the host UID/GID that owns the AMP files (for example, `id -u` and `id -g`). Then run `docker compose up -d lark-gateway`. Compose publishes `127.0.0.1:3025`, mounts the host `~/.agent-messaging` directory so outbound polling works, and mounts the whole routing directory read-only so hot reload continues to work. The container runs as the configured numeric gateway user; ensure the mounted inbox files and directories are owned by or writable to that UID/GID. The image binds inside its container to `0.0.0.0`; keep the host port mapping loopback-only unless intentionally exposing the management API with `ADMIN_TOKEN` set.
 
 ## Live smoke procedure
 

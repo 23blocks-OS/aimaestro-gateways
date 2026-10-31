@@ -60,7 +60,9 @@ test("100-message soak routes 5 senders once across a persisted restart without 
     const messageId = body.payload.context.lark.message_id;
     if (seen.has(messageId)) throw new Error("duplicate route");
     seen.add(messageId);
-    const replyFile = path.join(config.amp.inboxDir, `reply-${messageId}.json`);
+    const senderDir = path.join(config.amp.inboxDir, body.to.replace(/[@.]/g, "_"));
+    fs.mkdirSync(senderDir, { recursive: true });
+    const replyFile = path.join(senderDir, `reply-${messageId}.json`);
     fs.writeFileSync(
       replyFile,
       JSON.stringify({
@@ -294,17 +296,20 @@ test("uploads inbound bytes to fake Maestro and routes only the resulting attach
   };
   const calls: string[] = [];
   let routed: any;
+  let uploadFilename = "";
   const oldFetch = globalThis.fetch;
   globalThis.fetch = (async (input, init) => {
     const url = String(input);
     calls.push(`${init?.method || "GET"} ${url}`);
-    if (url.endsWith("/api/v1/attachments/upload"))
+    if (url.endsWith("/api/v1/attachments/upload")) {
+      uploadFilename = JSON.parse(String(init?.body)).filename;
       return Response.json({
         data: {
           attachment_id: "att_123",
           upload_url: "https://upload.example.invalid/put",
         },
       });
+    }
     if ((init?.method || "GET") === "PUT")
       return Response.json({ data: { scan_status: "clean" } });
     if (url.endsWith("/confirm"))
@@ -313,6 +318,8 @@ test("uploads inbound bytes to fake Maestro and routes only the resulting attach
       return Response.json({
         data: {
           url: "https://maestro.example.invalid/api/v1/attachments/att_123/content?token=cap",
+          scan_status: "clean",
+          expires_at: "2027-01-01T00:00:00Z",
         },
       });
     routed = JSON.parse(String(init?.body));
@@ -320,7 +327,7 @@ test("uploads inbound bytes to fake Maestro and routes only the resulting attach
   }) as typeof fetch;
   const ops: LarkOps = {
     download: async () => ({
-      name: "note.txt",
+      name: "resource-key",
       contentType: "text/plain",
       bytes: Buffer.from("hello attachment"),
     }),
@@ -361,7 +368,9 @@ test("uploads inbound bytes to fake Maestro and routes only the resulting attach
       calls.filter((call) => call.includes("attachments/")).length,
       3,
     );
-    assert.equal(routed.payload.attachments[0].attachment_id, "att_123");
+    assert.equal(routed.payload.attachments[0].id, "att_123");
+    assert.equal(uploadFilename, "note.txt");
+    assert.equal(routed.payload.attachments[0].scan_status, "clean");
     assert.equal(routed.payload.attachments[0].url.includes("token=cap"), true);
     assert.equal("content" in routed.payload.attachments[0], false);
   } finally {
@@ -432,21 +441,25 @@ test("fetches the reply parent text and sends only the person slug while strippi
       message: {
         message_id: "child",
         parent_id: "parent",
-        chat_id: "ou_example",
+        chat_id: "oc_dm_parent",
         chat_type: "p2p",
         message_type: "text",
-        content: JSON.stringify({ text: "@_bot answer please" }),
-        mentions: [{ key: "@_bot", name: "AI", mentioned_type: "bot" }],
+        content: JSON.stringify({ text: "@_bot @_alice answer please" }),
+        mentions: [
+          { key: "@_bot", name: "AI", mentioned_type: "bot" },
+          { key: "@_alice", name: "Alice", mentioned_type: "user" },
+        ],
       },
     } as any);
     await until(() => Boolean(routed));
     processor.stop();
     assert.equal(fetched, "parent");
-    assert.equal(
+    assert.match(
       routed.payload.context.lark.parent_text,
-      "Parent asks about schedule",
+      /<external-content source="lark" sender="alice" trust="(?:external|forwarded)">[\s\S]*Parent asks about schedule[\s\S]*<\/external-content>/,
     );
     assert.equal(routed.payload.message.includes("@_bot"), false);
+    assert.equal(routed.payload.message.includes("@Alice"), true);
     assert.equal(routed.payload.context.channel.sender_id, "alice");
     assert.equal(JSON.stringify(routed).includes("ou_example"), false);
   } finally {
@@ -531,6 +544,28 @@ test("poison inbound messages back off, park, and send one failure reply", async
     processor.stop();
     assert.equal(attempts, 3);
     assert.equal(replies, 1);
+  } finally {
+    globalThis.fetch = oldFetch;
+  }
+});
+
+test("permanent Maestro 4xx parks a message immediately and sends one notice", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-permanent-inbound-"));
+  const config = { amp: { apiKey: "fake", agentAddress: "bot", tenant: "example", maestroUrl: "http://fake", inboxDir: path.join(dir, "inbox") }, stateDir: dir, timeoutMs: 1000, pollIntervalMs: 10, workingDelayMs: 100000 } as GatewayConfig;
+  const routing: RoutingConfig = { people: { alice: { open_id: "ou_alice", agent: "alice-agent", enabled: true, admin: false } }, default_reply_unknown: "", disabled_person: "", group_pointer: "" };
+  let attempts = 0;
+  let notices = 0;
+  const oldFetch = globalThis.fetch;
+  globalThis.fetch = (async () => { attempts++; return new Response("forbidden", { status: 403 }); }) as typeof fetch;
+  const ops: LarkOps = { download: async () => ({ name: "", contentType: "", bytes: Buffer.alloc(0) }), parentText: async () => null, reply: async (_chat, text) => { if (text.includes("could not deliver")) notices++; }, react: async () => {} };
+  try {
+    const processor = new InboundProcessor(config, () => routing, new DedupeStore(path.join(dir, "dedupe.json")), new ThreadStore(path.join(dir, "threads.json")), ops);
+    processor.start();
+    processor.enqueue({ event_id: "permanent-event", sender: { sender_id: { open_id: "ou_alice" }, sender_type: "user" }, message: { message_id: "permanent-message", chat_id: "oc_alice", chat_type: "p2p", message_type: "text", content: JSON.stringify({ text: "hello" }), mentions: [] } } as any);
+    await until(() => fs.existsSync(path.join(dir, "undeliverable-inbound", "permanent-message.json")));
+    processor.stop();
+    assert.equal(attempts, 1);
+    assert.equal(notices, 1);
   } finally {
     globalThis.fetch = oldFetch;
   }
@@ -624,6 +659,7 @@ test("@AIM tags override routing only for admins and alternate-agent content is 
     assert.equal(alice.payload.context.security.trust, "external");
     assert.equal(carol.to, "carol-agent@example.aimaestro.local");
     assert.equal(carol.payload.context.security.trust, "operator");
+    assert.match(carol.payload.message, /@AIM:bob-agent/);
   } finally {
     globalThis.fetch = oldFetch;
   }

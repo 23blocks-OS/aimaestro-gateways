@@ -3,3 +3,6 @@ dist/
 .env
 data/
 thread-store.json
+routing.yaml
+config/routing.yaml
+thread-store.json

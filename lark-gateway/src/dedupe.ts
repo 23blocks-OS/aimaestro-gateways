@@ -40,6 +40,14 @@ export class DedupeStore {
     this.prune();
     return this.seen.has(`r:${messageId}`);
   }
+  hasCard(eventId: string): boolean {
+    this.prune();
+    return this.seen.has(`c:${eventId}`);
+  }
+  markCard(eventId: string): void {
+    this.seen.set(`c:${eventId}`, Date.now());
+    this.save();
+  }
   markRouted(messageId: string): void {
     this.seen.set(`r:${messageId}`, Date.now());
     this.save();

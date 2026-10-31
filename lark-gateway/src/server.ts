@@ -30,6 +30,7 @@ import { createCardActionHandler } from "./card-actions.js";
 import { createActivityRouter } from "./api/activity-api.js";
 import { createStatsRouter } from "./api/stats-api.js";
 import { logEvent } from "./api/activity-log.js";
+import { larkLogger } from "./lark-logger.js";
 import type { RoutingConfig } from "./types.js";
 
 function auth(token: string) {
@@ -157,6 +158,12 @@ async function main(): Promise<void> {
     );
     return;
   }
+  fs.mkdirSync(config.amp.inboxDir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(config.amp.inboxDir, 0o700);
+  } catch (error) {
+    console.error(`[CONFIG] Could not secure AMP inbox directory permissions: ${(error as Error).message}`);
+  }
   if (!fs.existsSync(config.routingFile))
     console.warn(
       `[CONFIG] No routing file at ${config.routingFile}; DM senders receive the configured unknown-sender response.`,
@@ -166,12 +173,14 @@ async function main(): Promise<void> {
     appId: config.appId,
     appSecret: config.appSecret,
     domain,
-  }) as Client & Record<string, any>;
+    logger: larkLogger,
+  });
   const ws = new WSClient({
     appId: config.appId,
     appSecret: config.appSecret,
     domain,
     autoReconnect: true,
+    logger: larkLogger,
     onReady: () => console.log("[LARK] Long connection ready"),
     onReconnecting: () => console.warn("[LARK] Long connection reconnecting"),
     onReconnected: () => console.log("[LARK] Long connection restored"),
@@ -187,7 +196,13 @@ async function main(): Promise<void> {
   );
   inbound.start();
 
-  const onCardAction = createCardActionHandler(config, () => routing, dedupe);
+  const onCardAction = createCardActionHandler(
+    config,
+    () => routing,
+    dedupe,
+    fetch,
+    (raw) => inbound.enqueueCardAction(raw),
+  );
   const dispatcher = createLarkEventDispatcher(
     inbound,
     config.cardCallbackMode === "long-connection" ? onCardAction : undefined,
@@ -197,10 +212,14 @@ async function main(): Promise<void> {
       {
         verificationToken: config.verificationToken,
         encryptKey: config.encryptKey,
+        logger: larkLogger,
       },
       onCardAction,
     );
-    app.use("/lark/callback", adaptExpress(cardDispatcher));
+    app.use(
+      "/lark/callback",
+      adaptExpress(cardDispatcher, { autoChallenge: true, logger: larkLogger }),
+    );
     console.log(
       "[LARK] Card callbacks use the opt-in HTTP endpoint /lark/callback",
     );

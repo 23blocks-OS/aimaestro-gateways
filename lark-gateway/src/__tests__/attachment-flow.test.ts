@@ -3,6 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   downloadAmpAttachment,
+  sanitizeAttachmentFilename,
   uploadAmpAttachment,
 } from "../attachment-flow.js";
 import type { GatewayConfig } from "../types.js";
@@ -49,6 +50,8 @@ test("uploads bytes through AMP init, PUT, confirm, and status, returning a capa
     return Response.json({
       data: {
         url: "https://maestro.example.invalid/api/v1/attachments/att_123/content?token=cap",
+        scan_status: "clean",
+        expires_at: "2027-01-01T00:00:00Z",
       },
     });
   };
@@ -66,12 +69,20 @@ test("uploads bytes through AMP init, PUT, confirm, and status, returning a capa
   assert.equal(calls[1]?.auth, undefined);
   assert.equal(calls[2]?.url.endsWith("/att_123/confirm"), true);
   assert.equal(calls[3]?.url.endsWith("/att_123"), true);
-  assert.equal(result.attachment_id, "att_123");
+  assert.equal(result.id, "att_123");
+  assert.equal(result.scan_status, "clean");
+  assert.equal(result.expires_at, "2027-01-01T00:00:00Z");
   assert.equal(
     result.digest,
     "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
   );
   assert.match(result.url || "", /token=cap/);
+});
+
+test("sanitizes Lark filenames using Maestro's published filename rules", () => {
+  assert.equal(sanitizeAttachmentFilename("../résumé.pdf", "file_key_123"), "file_key_123");
+  assert.equal(sanitizeAttachmentFilename("report.pdf", "file_key_123"), "report.pdf");
+  assert.equal(sanitizeAttachmentFilename("CON.txt", "file_key_123"), "file_key_123");
 });
 
 test("downloads references by capability URL and still accepts inline base64", async () => {

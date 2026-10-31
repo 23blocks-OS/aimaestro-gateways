@@ -29,7 +29,8 @@ export async function routeCardAction(
   value: Record<string, unknown>,
   clicker: string,
   fetchImpl: typeof fetch = fetch,
-): Promise<void> {
+  chatId = "",
+): Promise<string> {
   const selectedAgent = typeof value.agent === "string" ? value.agent : "";
   if (!selectedAgent) throw new Error("Card action has no agent");
   const target =
@@ -50,10 +51,13 @@ export async function routeCardAction(
           bridge_agent: config.amp.agentAddress,
           sender: clicker,
           sender_id: clicker,
+          sender_name: clicker,
+          chat_id: chatId,
         },
         lark: {
           app: "agent",
           person: clicker,
+          chat_id: chatId,
           card_action: { action: value.action, value: value.value, clicker },
         },
         security: {
@@ -74,6 +78,8 @@ export async function routeCardAction(
     signal: AbortSignal.timeout(config.timeoutMs),
   });
   if (!response.ok) throw new Error(`AMP route failed (${response.status})`);
+  const result = (await response.json()) as { id?: string; data?: { id?: string } };
+  return result.id || result.data?.id || "";
 }
 
 /** Return the Lark callback response promptly and route accepted clicks once. */
@@ -82,6 +88,7 @@ export function createCardActionHandler(
   getRouting: () => RoutingConfig,
   dedupe: DedupeStore,
   fetchImpl: typeof fetch = fetch,
+  enqueue?: (raw: unknown) => void,
 ): (raw: unknown) => Promise<Record<string, unknown>> {
   return async (raw: unknown) => {
     const outer = object(raw);
@@ -113,8 +120,7 @@ export function createCardActionHandler(
         : typeof outer.event_id === "string"
           ? outer.event_id
           : "";
-    const actionKey = `card:${event.messageId}:${clicker}:${JSON.stringify(event.action.value || {})}`;
-    if (dedupe.hasOrAdd(eventId, actionKey)) {
+    if (eventId && dedupe.hasCard(eventId)) {
       return {
         toast: {
           type: "success",
@@ -123,12 +129,13 @@ export function createCardActionHandler(
       };
     }
 
-    void routeCardAction(config, routing, value, clicker, fetchImpl).catch(
-      (error) =>
-        console.error(
-          `[CARD] Action route failed: ${(error as Error).message}`,
-        ),
-    );
+    if (enqueue) {
+      enqueue(raw);
+    } else {
+      void routeCardAction(config, routing, value, clicker, fetchImpl)
+        .then(() => { if (eventId) dedupe.markCard(eventId); })
+        .catch((error) => console.error(`[CARD] Action route failed: ${(error as Error).message}`));
+    }
     return {
       toast: {
         type: "success",

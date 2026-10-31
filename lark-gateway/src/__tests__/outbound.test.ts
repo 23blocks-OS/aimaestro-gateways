@@ -10,6 +10,12 @@ import type { GatewayConfig, RoutingConfig } from "../types.js";
 import { isAgentSender } from "../routing.js";
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const inboxFiles = (inbox: string) =>
+  fs.readdirSync(inbox, { withFileTypes: true }).flatMap((entry) =>
+    entry.isDirectory()
+      ? fs.readdirSync(path.join(inbox, entry.name)).map((name) => path.join(inbox, entry.name, name))
+      : [path.join(inbox, entry.name)],
+  );
 test("outbound selects plain text or card, splits, routes initiations and sends attachments", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-out-"));
   const inbox = path.join(dir, "inbox");
@@ -60,9 +66,10 @@ test("outbound selects plain text or card, splits, routes initiations and sends 
     message: string,
     context: Record<string, unknown>,
     attachments: unknown[] = [],
-  ) =>
+  ) => {
+    fs.mkdirSync(path.join(inbox, "alice_agent_example_aimaestro_local"), { recursive: true });
     fs.writeFileSync(
-      path.join(inbox, name),
+      path.join(inbox, "alice_agent_example_aimaestro_local", name),
       JSON.stringify({
         envelope: {
           id: name,
@@ -72,6 +79,7 @@ test("outbound selects plain text or card, splits, routes initiations and sends 
         payload: { message, context: { lark: context }, attachments },
       }),
     );
+  };
   mk("one.json", "Hello", { to: "alice" });
   mk(
     "two.json",
@@ -89,7 +97,7 @@ test("outbound selects plain text or card, splits, routes initiations and sends 
     ops,
   );
   poller.start();
-  for (let i = 0; i < 100 && fs.readdirSync(inbox).length; i++) await wait(10);
+  for (let i = 0; i < 100 && inboxFiles(inbox).length; i++) await wait(10);
   poller.stop();
   assert.ok(calls.some((c) => c.type === "text" && c.text === "Hello"));
   assert.ok(calls.filter((c) => c.type === "card").length >= 2);
@@ -166,14 +174,16 @@ test("parks wrong agent replies and agent-initiated DMs while allowing each conf
     from: string,
     context: Record<string, unknown>,
     reply?: string,
-  ) =>
+  ) => {
+    fs.mkdirSync(path.join(inbox, from.replace(/[@.]/g, "_")), { recursive: true });
     fs.writeFileSync(
-      path.join(inbox, name),
+      path.join(inbox, from.replace(/[@.]/g, "_"), name),
       JSON.stringify({
         envelope: { id: name, from, in_reply_to: reply || null },
         payload: { message: "hi", context: { lark: context } },
       }),
     );
+  };
   write(
     "wrong-thread.json",
     "alice-agent@example.aimaestro.local",
@@ -190,7 +200,7 @@ test("parks wrong agent replies and agent-initiated DMs while allowing each conf
   write("owner.json", "alice-agent@example.aimaestro.local", { to: "alice" });
   const poller = new OutboundPoller(config, () => routing, threads, ops);
   poller.start();
-  for (let i = 0; i < 100 && fs.readdirSync(inbox).length; i++) await wait(10);
+  for (let i = 0; i < 100 && inboxFiles(inbox).length; i++) await wait(10);
   poller.stop();
   threads.close();
   assert.deepEqual(
@@ -204,4 +214,45 @@ test("parks wrong agent replies and agent-initiated DMs while allowing each conf
     "wrong-thread.json",
     "wrong-to.json",
   ]);
+});
+
+test("partial outbound sends checkpoint completed chunks and do not resend after permanent or local failures", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-partial-out-"));
+  const inbox = path.join(dir, "inbox");
+  const senderDir = path.join(inbox, "alice_agent_example_aimaestro_local");
+  fs.mkdirSync(senderDir, { recursive: true });
+  const config = { amp: { inboxDir: inbox, tenant: "example" }, pollIntervalMs: 5 } as GatewayConfig;
+  const routing: RoutingConfig = { people: { alice: { open_id: "ou_alice", agent: "alice-agent", enabled: true, admin: false } }, default_reply_unknown: "", disabled_person: "", group_pointer: "" };
+  const write = (name: string, reply?: string) => fs.writeFileSync(path.join(senderDir, name), JSON.stringify({
+    envelope: { id: name, from: "alice-agent@example.aimaestro.local", in_reply_to: reply || null },
+    payload: { message: "x ".repeat(4000), context: { lark: reply ? {} : { to: "alice" } } },
+  }));
+  write("permanent.json");
+  let attempts = 0;
+  let failSecond = true;
+  const threads = new ThreadStore(path.join(dir, "threads.json"));
+  const ops: any = { reply: async () => {}, sendText: async () => { attempts++; if (failSecond && attempts === 2) throw new Error("Lark API 400: invalid params"); return "sent"; }, sendCard: async () => "", sendAttachment: async () => {}, finishReaction: async () => {} };
+  const poller = new OutboundPoller(config, () => routing, threads, ops);
+  poller.start();
+  for (let i = 0; i < 100 && fs.existsSync(path.join(senderDir, "permanent.json")); i++) await wait(10);
+  poller.stop();
+  assert.equal(attempts, 2);
+  assert.ok(fs.existsSync(path.join(dir, "undeliverable", "permanent.json")));
+
+  const replyDir = path.join(inbox, "reply_agent_example_aimaestro_local");
+  fs.mkdirSync(replyDir, { recursive: true });
+  write("local.json", "known");
+  threads.set("known", { messageId: "lark-parent", rootId: "lark-parent", chatId: "oc_chat", chatType: "p2p", openId: "ou_alice", person: "alice", agent: "alice-agent", createdAt: Date.now() });
+  fs.renameSync(path.join(senderDir, "local.json"), path.join(replyDir, "local.json"));
+  let localFailures = 0;
+  const originalUpdate = threads.updateStatus.bind(threads);
+  threads.updateStatus = ((root: string, status: "working" | "done") => { if (localFailures++ === 0) throw new Error("local bookkeeping failure"); originalUpdate(root, status); }) as typeof threads.updateStatus;
+  attempts = 0;
+  failSecond = false;
+  const localPoller = new OutboundPoller(config, () => routing, threads, ops);
+  localPoller.start();
+  for (let i = 0; i < 100 && fs.existsSync(path.join(replyDir, "local.json")); i++) await wait(10);
+  localPoller.stop();
+  threads.close();
+  assert.equal(attempts, 3, `all chunks should have been delivered; inbox=${JSON.stringify(fs.readdirSync(inbox))}, parked=${JSON.stringify(fs.readdirSync(path.join(dir, "undeliverable")))}; local=${localFailures}`);
 });

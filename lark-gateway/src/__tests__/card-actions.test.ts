@@ -12,6 +12,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { GatewayConfig, RoutingConfig } from "../types.js";
+import { InboundProcessor } from "../inbound.js";
+import { ThreadStore } from "../thread-store.js";
+import { OutboundPoller } from "../outbound.js";
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const until = async (predicate: () => boolean, timeout = 5000) => {
+  const end = Date.now() + timeout;
+  while (!predicate() && Date.now() < end) await wait(5);
+  assert.ok(predicate(), "timed out waiting for card action delivery");
+};
 
 const routing: RoutingConfig = {
   people: {
@@ -91,6 +101,7 @@ test("persistent-connection card event replies promptly and routes duplicate cli
     timeoutMs: 1000,
   } as GatewayConfig;
   let requestCount = 0;
+  const queued = new Set<string>();
   const handler = createCardActionHandler(
     config,
     () => routing,
@@ -98,6 +109,10 @@ test("persistent-connection card event replies promptly and routes duplicate cli
     async () => {
       requestCount++;
       return new Response("{}", { status: 200 });
+    },
+    (raw) => {
+      const id = (raw as any).event_id;
+      if (!queued.has(id)) queued.add(id);
     },
   );
   const event = {
@@ -126,7 +141,73 @@ test("persistent-connection card event replies promptly and routes duplicate cli
   );
   assert.equal(
     ((duplicate as any).toast as { content: string }).content,
-    "This action was already received.",
+    "Received. The agent is working on it.",
   );
-  assert.equal(requestCount, 1);
+  assert.equal(queued.size, 1);
+  assert.equal(requestCount, 0);
+});
+
+test("queued card click stores its AMP thread and delivers the agent reply to the card DM", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lark-card-roundtrip-"));
+  const inbox = path.join(dir, "inbox");
+  const config = {
+    amp: { tenant: "example", agentAddress: "lark-bot@example.aimaestro.local", maestroUrl: "http://amp", apiKey: "key", inboxDir: inbox },
+    stateDir: dir,
+    timeoutMs: 1000,
+    pollIntervalMs: 5,
+    workingDelayMs: 100000,
+  } as GatewayConfig;
+  const threads = new ThreadStore(path.join(dir, "threads.json"));
+  const dedupe = new DedupeStore(path.join(dir, "dedupe.json"));
+  const ops: any = {
+    download: async () => ({ name: "", contentType: "", bytes: Buffer.alloc(0) }),
+    parentText: async () => null,
+    reply: async () => {},
+    react: async () => {},
+  };
+  const processor = new InboundProcessor(config, () => routing, dedupe, threads, ops, { baseDelayMs: 5 });
+  const oldFetch = globalThis.fetch;
+  let routeAttempts = 0;
+  globalThis.fetch = (async () => {
+    routeAttempts++;
+    if (routeAttempts === 1) return new Response("unavailable", { status: 503 });
+    return new Response(JSON.stringify({ id: "amp-card-click-1" }), { status: 200 });
+  }) as typeof fetch;
+  const event = {
+    schema: "2.0",
+    header: { event_id: "click-roundtrip-1", event_type: "card.action.trigger" },
+    event: {
+      context: { open_message_id: "om_card_1", open_chat_id: "oc_alice_dm" },
+      operator: { open_id: "ou_example_alice" },
+      action: { value: { owner: "alice", agent: "alice-agent", action: "confirm", amp_thread: "original-amp-thread" } },
+    },
+  };
+  try {
+    processor.start();
+    processor.enqueueCardAction(event);
+    await until(() => fs.readdirSync(path.join(dir, "inbound-queue")).filter((n) => n.endsWith(".json")).length === 0);
+    assert.equal(routeAttempts, 2, "a transient route failure is retried from the durable queue");
+    assert.equal(threads.get("amp-card-click-1")?.messageId, "om_card_1");
+    fs.mkdirSync(path.join(inbox, "alice_agent_example_aimaestro_local"), { recursive: true });
+    fs.writeFileSync(path.join(inbox, "alice_agent_example_aimaestro_local", "answer.json"), JSON.stringify({
+      envelope: { id: "answer", from: "alice-agent@example.aimaestro.local", in_reply_to: "amp-card-click-1" },
+      payload: { message: "Confirmed", context: { lark: {} } },
+    }));
+    let delivered: any;
+    const poller = new OutboundPoller(config, () => routing, threads, {
+      reply: async () => {},
+      sendText: async (chat, text, parent) => { delivered = { chat, text, parent }; return "om_answer"; },
+      sendCard: async () => "",
+      sendAttachment: async () => {},
+      finishReaction: async () => {},
+    });
+    poller.start();
+    await until(() => Boolean(delivered));
+    poller.stop();
+    assert.deepEqual(delivered, { chat: "oc_alice_dm", text: "Confirmed", parent: "om_card_1" });
+  } finally {
+    processor.stop();
+    threads.close();
+    globalThis.fetch = oldFetch;
+  }
 });

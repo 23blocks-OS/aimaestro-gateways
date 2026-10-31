@@ -6,7 +6,7 @@ import { normalizeMessage } from "./normalize.js";
 import type { GatewayConfig } from "./types.js";
 import { downloadAmpAttachment } from "./attachment-flow.js";
 
-type LarkClient = Client & Record<string, any>;
+type LarkClient = Client;
 function check(response: any): any {
   if (response && typeof response.code === "number" && response.code !== 0)
     throw new Error(
@@ -63,10 +63,14 @@ export class LarkApi implements LarkOps {
     const response = check(
       await this.client.im.message.get({ path: { message_id: messageId } }),
     );
-    return (response.items || []).map((item: any) => ({
-      content: item.body?.content || "",
-      sender: { sender_name: item.sender?.sender_name },
-    }));
+    return (response.items || [])
+      .filter((item: any) => !(item.message_id === messageId && !item.upper_message_id))
+      .map((item: any) => ({
+        content: item.body?.content || "",
+        // The message API exposes sender.id, but not a display name. Avoid
+        // forwarding an opaque user identifier into agent-visible content.
+        sender: { sender_name: item.sender?.sender_name || "forwarded sender" },
+      }));
   }
   async reply(chatId: string, text: string, parentId?: string): Promise<void> {
     const data = { msg_type: "text", content: JSON.stringify({ text }) };
@@ -95,7 +99,7 @@ export class LarkApi implements LarkOps {
       }),
     );
   }
-  async finishReaction(messageId: string): Promise<void> {
+  async finishReaction(messageId: string, emoji = "DONE"): Promise<void> {
     try {
       const list = await this.client.im.messageReaction.listWithIterator({
         path: { message_id: messageId },
@@ -113,7 +117,7 @@ export class LarkApi implements LarkOps {
     } catch {
       /* reaction cleanup should not suppress a reply */
     }
-    await this.react(messageId, "DONE");
+    await this.react(messageId, emoji);
   }
   async sendCard(
     chatId: string,
@@ -127,6 +131,7 @@ export class LarkApi implements LarkOps {
       reply_in_thread: this.config.replyInThread,
       uuid,
     };
+    const createData = { msg_type: data.msg_type, content: data.content, uuid: data.uuid };
     const result = parentId
       ? check(
           await this.client.im.message.reply({
@@ -139,7 +144,7 @@ export class LarkApi implements LarkOps {
             params: {
               receive_id_type: chatId.startsWith("ou_") ? "open_id" : "chat_id",
             },
-            data: { ...data, receive_id: chatId },
+            data: { ...createData, receive_id: chatId },
           }),
         );
     return result.message_id || result.message?.message_id || "";
@@ -156,6 +161,7 @@ export class LarkApi implements LarkOps {
       reply_in_thread: this.config.replyInThread,
       uuid,
     };
+    const createData = { msg_type: data.msg_type, content: data.content, uuid: data.uuid };
     const result = parentId
       ? check(
           await this.client.im.message.reply({
@@ -168,7 +174,7 @@ export class LarkApi implements LarkOps {
             params: {
               receive_id_type: chatId.startsWith("ou_") ? "open_id" : "chat_id",
             },
-            data: { ...data, receive_id: chatId },
+            data: { ...createData, receive_id: chatId },
           }),
         );
     return result.message_id || result.message?.message_id || "";

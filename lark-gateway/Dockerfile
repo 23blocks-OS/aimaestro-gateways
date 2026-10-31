@@ -9,14 +9,15 @@ COPY src ./src
 RUN npm run build
 
 FROM node:24-alpine
-RUN addgroup -S gateway && adduser -S -G gateway -h /home/gateway gateway
+ARG GATEWAY_UID=1000
+ARG GATEWAY_GID=1000
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 COPY routing.example.yaml ./routing.example.yaml
-RUN mkdir -p /app/data /home/gateway/.agent-messaging && chown -R gateway:gateway /app /home/gateway
-USER gateway
+RUN mkdir -p /app/data /home/gateway/.agent-messaging && chown -R "$GATEWAY_UID:$GATEWAY_GID" /app /home/gateway
+USER ${GATEWAY_UID}:${GATEWAY_GID}
 ENV HOME=/home/gateway BIND_ADDRESS=0.0.0.0
 EXPOSE 3025
 CMD ["node", "dist/server.js"]

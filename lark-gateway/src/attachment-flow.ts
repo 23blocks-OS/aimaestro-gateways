@@ -3,14 +3,25 @@ import { createHash } from "node:crypto";
 import type { GatewayConfig } from "./types.js";
 
 export interface AmpAttachmentReference {
-  attachment_id: string;
+  id: string;
   filename: string;
   content_type: string;
   size: number;
   digest: string;
+  scan_status?: string;
+  expires_at?: string;
   url?: string;
   download_url?: string;
   token?: string;
+}
+
+const RESERVED_NAMES = new Set(["CON", "PRN", "AUX", "NUL", ...Array.from({ length: 9 }, (_, i) => `COM${i + 1}`), ...Array.from({ length: 9 }, (_, i) => `LPT${i + 1}`)]);
+export function sanitizeAttachmentFilename(raw: string, fallback: string): string {
+  const valid = (value: string) => {
+    const stripped = value.replace(/^[.\s]+/, "").replace(/[.\s]+$/, "");
+    return stripped.length > 0 && stripped.length <= 255 && /^[a-zA-Z0-9._-]+$/.test(stripped) && !RESERVED_NAMES.has(stripped.split(".")[0].toUpperCase()) ? stripped : null;
+  };
+  return valid(raw) || valid(fallback) || "attachment";
 }
 
 interface JsonResponse {
@@ -62,7 +73,7 @@ export async function uploadAmpAttachment(
     signal: AbortSignal.timeout(config.timeoutMs),
   });
   const init = await responseData(initialized, "init");
-  const id = String(init.attachment_id || "");
+  const id = String(init.id || init.attachment_id || "");
   const uploadUrl = String(init.upload_url || "");
   if (!id || !uploadUrl)
     throw new Error("AMP attachment init omitted attachment_id or upload_url");
@@ -99,11 +110,13 @@ export async function uploadAmpAttachment(
   if (typeof status.url !== "string")
     throw new Error("AMP attachment status did not provide a download URL");
   return {
-    attachment_id: id,
+    id,
     filename: attachment.name,
     content_type: attachment.content_type,
     size: attachment.bytes.length,
     digest,
+    scan_status: typeof status.scan_status === "string" ? status.scan_status : typeof confirmed.scan_status === "string" ? confirmed.scan_status : undefined,
+    expires_at: typeof status.expires_at === "string" ? status.expires_at : undefined,
     url: status.url,
   };
 }
