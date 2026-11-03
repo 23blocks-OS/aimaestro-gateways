@@ -1,5 +1,6 @@
 /** Maps Lark senders and AMP agent identities to configured routes. */
 import type { RoutingConfig } from './types.js';
+import { tidySpaces } from './normalize.js';
 
 export interface RouteDecision {
   kind: 'route' | 'unknown' | 'disabled' | 'group' | 'ignore';
@@ -59,7 +60,7 @@ export function parseAgentTag(text: string): { agent?: string; text: string } {
     ? {
         agent: match[1],
         text:
-          text.replace(match[0], '').replace(/\s+/g, ' ').trim() ||
+          tidySpaces(text.replace(match[0], '')) ||
           '(no message)',
       }
     : { text };

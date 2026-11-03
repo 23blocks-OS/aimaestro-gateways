@@ -565,7 +565,16 @@ test('uploads inbound bytes to fake Maestro and routes only the resulting attach
   }
 });
 
-test('fetches the reply parent text and sends only the person slug while stripping bot mentions', async () => {
+const parentCases = [
+  [
+    'their own message',
+    { text: 'Parent asks about schedule', fromBot: false, senderOpenId: 'ou_example' },
+    'alice',
+  ],
+  ['an agent message', { text: 'Parent asks about schedule', fromBot: true }, 'agent'],
+] as const;
+for (const [quoted, parentMessage, author] of parentCases)
+  test(`fetches the reply parent text (quoting ${quoted}) and sends only the person slug while stripping bot mentions`, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lark-parent-'));
   const config = {
     amp: {
@@ -608,7 +617,7 @@ test('fetches the reply parent text and sends only the person slug while strippi
     }),
     parentText: async (id) => {
       fetched = id;
-      return 'Parent asks about schedule';
+      return parentMessage;
     },
     reply: async () => {},
     react: async () => {},
@@ -643,7 +652,9 @@ test('fetches the reply parent text and sends only the person slug while strippi
     assert.equal(fetched, 'parent');
     assert.match(
       routed.payload.context.lark.parent_text,
-      /<external-content source="lark" sender="alice" trust="(?:external|forwarded)">[\s\S]*Parent asks about schedule[\s\S]*<\/external-content>/,
+      new RegExp(
+        `<external-content source="lark" sender="${author}" trust="(?:external|forwarded)">[\\s\\S]*Parent asks about schedule[\\s\\S]*</external-content>`,
+      ),
     );
     assert.equal(routed.payload.message.includes('@_bot'), false);
     assert.equal(routed.payload.message.includes('@Alice'), true);
@@ -893,10 +904,38 @@ test('@AIM tags override routing only for admins and alternate-agent content is 
           mentions: [],
         },
       } as any);
-    await until(() => routed.length === 2);
+    // A tag inside forwarded content is not the admin choosing an agent.
+    processor.enqueue({
+      event_id: 'tag-forward',
+      sender: { sender_id: { open_id: 'ou_alice' }, sender_type: 'user' },
+      message: {
+        message_id: 'tag-message-forward',
+        chat_id: 'ou_alice',
+        chat_type: 'p2p',
+        message_type: 'merge_forward',
+        content: JSON.stringify({
+          messages: [
+            {
+              content: JSON.stringify({ text: '@AIM:bob-agent review' }),
+              sender: { sender_name: 'forwarded sender' },
+            },
+          ],
+        }),
+        mentions: [],
+      },
+    } as any);
+    await until(() => routed.length === 3);
     processor.stop();
+    const forward = routed.find(
+      (body) =>
+        body.payload.context.lark.message_id === 'tag-message-forward',
+    );
+    assert.equal(forward.to, 'alice-agent@example.aimaestro.local');
+    assert.equal(forward.payload.context.security.wrapped, true);
     const alice = routed.find(
-      (body) => body.payload.context.channel.sender_id === 'alice',
+      (body) =>
+        body.payload.context.channel.sender_id === 'alice' &&
+        body.payload.context.lark.message_id === 'tag-message-alice',
     );
     const carol = routed.find(
       (body) => body.payload.context.channel.sender_id === 'carol',

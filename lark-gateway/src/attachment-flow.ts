@@ -36,7 +36,21 @@ export function sanitizeAttachmentFilename(
       ? stripped
       : null;
   };
-  return valid(raw) || valid(fallback) || 'attachment';
+  // Lark keeps the sender's filename ("Offer (2).pdf"); replace characters
+  // Maestro rejects instead of falling back to the opaque file key.
+  const cleaned = (raw.split(/[\\/]/).pop() || '')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/_+/g, '_');
+  const dot = cleaned.lastIndexOf('.');
+  const ext = dot > 0 ? cleaned.slice(dot, dot + 16) : '';
+  const stem = dot > 0 ? cleaned.slice(0, dot) : cleaned;
+  // A name in another script ("合同.pdf") loses almost every character; use
+  // the unique file key with the original extension rather than "_.pdf".
+  const readable =
+    (stem.match(/[a-zA-Z0-9]/g) || []).length >= 2
+      ? `${stem.slice(0, 255 - ext.length)}${ext}`
+      : `${fallback}${ext}`;
+  return valid(raw) || valid(readable) || valid(fallback) || 'attachment';
 }
 
 interface JsonResponse {

@@ -21,13 +21,27 @@ import { normalizeCardAction } from '@larksuiteoapi/node-sdk';
 import { authorizeCardAction, routeCardAction } from './card-actions.js';
 
 type Dict = Record<string, unknown>;
+export interface ParentMessage {
+  text: string;
+  fromBot: boolean;
+  senderOpenId?: string;
+  /** The quoted message is itself a combined forward. */
+  forwarded?: boolean;
+}
+
+/** Lark images carry no filename; name them from the content type. */
+function withImageExtension(name: string, contentType: string): string {
+  const ext = /^image\/(png|jpeg|gif|webp)\b/.exec(contentType)?.[1];
+  if (!ext || /\.[a-z0-9]+$/i.test(name)) return name;
+  return `${name}.${ext === 'jpeg' ? 'jpg' : ext}`;
+}
 export interface LarkOps {
   download(
     messageId: string,
     key: string,
     type: string,
   ): Promise<{ name: string; contentType: string; bytes: Buffer }>;
-  parentText(messageId: string): Promise<string | null>;
+  parentText(messageId: string): Promise<ParentMessage | null>;
   reply(chatId: string, text: string, parentId?: string): Promise<void>;
   react(messageId: string, emoji: string): Promise<void>;
   forwardedMessages?(
@@ -257,17 +271,22 @@ export class InboundProcessor {
 
     // Fetch reply parent content when available, but failure does not block the message.
     const parentId = str(message.parent_id) || null;
-    let parentText: string | null = null;
+    let parent: ParentMessage | null = null;
     if (parentId) {
       try {
-        parentText = await this.ops.parentText(parentId);
+        parent = await this.ops.parentText(parentId);
       } catch {
-        parentText = null;
+        parent = null;
       }
     }
     const messageData = await this.downloadAttachments(chatId, id, normalized);
     if (messageData === null) return;
-    const tagged = parseAgentTag(normalized.text);
+    const forwarded = messageType === 'merge_forward';
+    // An @AIM: tag inside forwarded content is someone else's text, not the
+    // sender choosing an agent.
+    const tagged = forwarded
+      ? { agent: undefined, text: normalized.text }
+      : parseAgentTag(normalized.text);
     const sticky = parentId ? this.threads.get(parentId) : undefined;
     const target = selectTargetAgent(
       route.admin,
@@ -275,7 +294,6 @@ export class InboundProcessor {
       sticky?.agent,
       route.agent,
     );
-    const forwarded = messageType === 'merge_forward';
     const trust = target === route.agent ? 'operator' : 'external';
     const messageText = route.admin ? tagged.text : normalized.text;
     const security = sanitizeMessage(
@@ -287,8 +305,19 @@ export class InboundProcessor {
     const now = new Date().toISOString();
     const larkRootId = str(message.root_id) || null;
     const rootId = larkRootId || parentId || id;
-    const safeParentText = parentText
-      ? sanitizeMessage(parentText, route.person, 'external', true).sanitized
+    // Label the quoted message by its real author, never by the replier.
+    const parentAuthor = parent?.fromBot
+      ? 'agent'
+      : parent?.senderOpenId === openId
+        ? route.person
+        : 'other-lark-user';
+    const safeParentText = parent?.text
+      ? sanitizeMessage(
+          parent.text,
+          parentAuthor,
+          'external',
+          parent.forwarded === true,
+        ).sanitized
       : null;
     const ampPayload = {
       to: agentAddress(target, this.config.amp.tenant),
@@ -447,7 +476,10 @@ export class InboundProcessor {
         return null;
       }
       const reference = await uploadAmpAttachment(this.config, {
-        name: sanitizeAttachmentFilename(item.name, item.key),
+        name: sanitizeAttachmentFilename(
+          withImageExtension(item.name, downloaded.contentType),
+          item.key,
+        ),
         content_type: downloaded.contentType || 'application/octet-stream',
         bytes: downloaded.bytes,
       });

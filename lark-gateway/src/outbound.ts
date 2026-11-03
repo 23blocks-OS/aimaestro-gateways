@@ -54,30 +54,39 @@ function buildCard(
   owner: string,
   agent: string,
   threadId: string,
+  title?: string,
 ): Record<string, unknown> {
+  // Card JSON 2.0: its markdown element renders headings, tables, code
+  // blocks and quotes, which the 1.0 markdown element shows as raw text.
   const elements: unknown[] = [
     { tag: 'markdown', content: text.slice(0, 25000) },
   ];
-  if (buttons.length)
+  for (const b of buttons.slice(0, 5))
     elements.push({
-      tag: 'action',
-      actions: buttons.slice(0, 5).map((b) => ({
-        tag: 'button',
-        text: { tag: 'plain_text', content: b.label.slice(0, 50) },
-        type: 'primary',
-        value: {
-          agent,
-          action: b.action,
-          value: b.value ?? null,
-          amp_thread: threadId,
-          owner,
+      tag: 'button',
+      text: { tag: 'plain_text', content: b.label.slice(0, 50) },
+      type: 'primary',
+      behaviors: [
+        {
+          type: 'callback',
+          value: {
+            agent,
+            action: b.action,
+            value: b.value ?? null,
+            amp_thread: threadId,
+            owner,
+          },
         },
-      })),
+      ],
     });
+  // No header by default: Lark already shows the bot's name. An agent can
+  // set context.lark.title for one.
   return {
-    config: { wide_screen_mode: true },
-    header: { title: { tag: 'plain_text', content: 'AI Maestro' } },
-    elements,
+    schema: '2.0',
+    ...(title
+      ? { header: { title: { tag: 'plain_text', content: title } } }
+      : {}),
+    body: { elements },
   };
 }
 
@@ -86,6 +95,13 @@ export class OutboundPoller {
   private running = false;
   private stopped = false;
   private retries = new Map<string, { attempts: number; next: number }>();
+  /**
+   * Where each inbox file may be delivered, recorded once its sender passed
+   * the owner check. A failure notice goes only here: a message parked before
+   * that check is not from the person's agent, and a notice would let any AMP
+   * sender make the bot message any person.
+   */
+  private authorized = new Map<string, { chatId: string; parentId?: string }>();
   private undeliverable: string;
   constructor(
     private config: GatewayConfig,
@@ -131,6 +147,7 @@ export class OutboundPoller {
             /* absent checkpoint */
           }
           this.retries.delete(file);
+          this.authorized.delete(file);
         } catch (error) {
           if (error instanceof UndeliverableError) {
             this.park(file, error);
@@ -217,38 +234,34 @@ export class OutboundPoller {
     console.error(`[OUTBOUND] ${path.basename(file)} parked: ${reason}`);
     logEvent('error', 'Outbound Lark message parked', { error: reason });
     try {
-      const message = JSON.parse(
-        fs.readFileSync(
-          path.join(this.undeliverable, path.basename(file)),
-          'utf8',
-        ),
-      ) as AMPMessage;
-      const replyId = String(message.envelope?.in_reply_to || '');
-      const stored = replyId ? this.threads.get(replyId) : undefined;
-      const lark = object(object(message.payload?.context).lark);
-      const personKey = typeof lark.to === 'string' ? lark.to : '';
-      const person = personKey ? this.routing().people[personKey] : undefined;
-      const chatId = stored?.chatId || stored?.openId || person?.open_id;
-      const parentId = stored?.messageId || undefined;
-      if (chatId)
-        void this.ops
-          .reply(
-            chatId,
-            "Your agent's reply could not be delivered. Please try again later or contact an administrator.",
-            parentId,
-          )
-          .catch((replyError) =>
-            console.error(
-              `[OUTBOUND] Could not notify Lark recipient: ${errLine(replyError)}`,
-            ),
-          );
-    } catch (notifyError) {
+      fs.writeFileSync(
+        path.join(this.undeliverable, `${path.basename(file)}.reason.json`),
+        JSON.stringify({ reason, parkedAt: new Date().toISOString() }),
+        { mode: 0o600 },
+      );
+    } catch (reasonError) {
       console.error(
-        `[OUTBOUND] Could not prepare undeliverable notice: ${errLine(notifyError)}`,
+        `[OUTBOUND] Could not record park reason: ${errLine(reasonError)}`,
       );
     }
+    const destination = this.authorized.get(file);
+    this.authorized.delete(file);
+    if (!destination) return;
+    void this.ops
+      .reply(
+        destination.chatId,
+        "Your agent's reply could not be delivered. Please try again later or contact an administrator.",
+        destination.parentId,
+      )
+      .catch((replyError) =>
+        console.error(
+          `[OUTBOUND] Could not notify Lark recipient: ${errLine(replyError)}`,
+        ),
+      );
   }
   private async deliver(message: AMPMessage, file: string): Promise<void> {
+    // Re-checked on every attempt: routing may have changed since the last.
+    this.authorized.delete(file);
     const progressFile = `${file}.progress.json`;
     let completed = new Set<string>();
     try {
@@ -320,9 +333,14 @@ export class OutboundPoller {
     }
     const chatId = direct.chatId || direct.openId;
     const parent = direct.messageId || undefined;
+    this.authorized.set(file, { chatId, parentId: parent });
     const text = String(message.payload?.message || '');
     const larkContext = object(ctx.lark);
     const format = larkContext.format;
+    const title =
+      typeof larkContext.title === 'string'
+        ? Array.from(larkContext.title.trim()).slice(0, 100).join('')
+        : '';
     const buttons = Array.isArray(larkContext.buttons)
       ? (larkContext.buttons as Button[])
       : [];
@@ -354,6 +372,7 @@ export class OutboundPoller {
                 direct.person,
                 direct.agent,
                 replyId || String(message.envelope?.id || ''),
+                i === 0 ? title : undefined,
               ),
               parent,
               deliveryUuid(

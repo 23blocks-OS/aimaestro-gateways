@@ -1,5 +1,6 @@
 /** Scans untrusted Lark content and applies trust-aware wrapping. */
 import type { TrustResult } from './security-types.js';
+import { FORWARD_MARKER } from './normalize.js';
 
 export type TrustLevel = 'operator' | 'external';
 export interface InjectionFlag {
@@ -161,15 +162,18 @@ export function scanForInjection(text: string): InjectionFlag[] {
       pattern: 'bidirectional control',
       match: '[direction control character]',
     });
-  const normalized = text
+  // Match against the text with line breaks kept (line-anchored patterns such
+  // as quotes) and flattened (phrases split across lines).
+  const lined = text
     .replace(/[\u200B-\u200F\u2060\uFEFF]/g, '')
     .replace(/[\u202A-\u202E\u2066-\u2069]/g, ' ')
     .normalize('NFKD')
-    .replace(/\s+/g, ' ')
+    .replace(/[^\S\n]+/g, ' ')
     .slice(0, 10000);
+  const flat = lined.replace(/\s+/g, ' ');
   for (const item of patterns) {
     if (flags.length >= 5) break;
-    const match = normalized.match(item.regex);
+    const match = flat.match(item.regex) || lined.match(item.regex);
     if (match)
       flags.push({
         category: item.category,
@@ -204,13 +208,21 @@ export function sanitizeMessage(
       flags: [],
       wrapped: false,
     };
-  const flags = scanForInjection(text);
+  // The gateway's own forward marker is not an attack; a second copy inside
+  // the forwarded content still is.
+  const flags = scanForInjection(
+    forwarded && text.startsWith(FORWARD_MARKER)
+      ? text.slice(FORWARD_MARKER.length)
+      : text,
+  );
   const warnings = flags.length
     ? `\n[SECURITY WARNING: ${flags.length} suspicious pattern(s) detected]\n${flags.map((f) => `  - ${f.category}: "${f.match}"`).join('\n')}\n`
     : '';
+  // Neutralize any spelling of the wrapper's own tags so content cannot
+  // close the wrapper or open a fake one.
   const safe = text.replace(
-    /<\/external-content>/gi,
-    '&lt;/external-content&gt;',
+    /<\s*(?:\/\s*)?external-content\b[^>\n]*>?/gi,
+    (tag) => tag.replace(/</g, '&lt;').replace(/>/g, '&gt;'),
   );
   const level = forwarded ? 'forwarded' : 'external';
   return {

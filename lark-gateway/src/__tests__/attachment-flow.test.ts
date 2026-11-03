@@ -82,7 +82,24 @@ test('uploads bytes through AMP init, PUT, confirm, and status, returning a capa
 test("sanitizes Lark filenames using Maestro's published filename rules", () => {
   assert.equal(
     sanitizeAttachmentFilename('../résumé.pdf', 'file_key_123'),
+    'r_sum_.pdf',
+  );
+  assert.equal(
+    sanitizeAttachmentFilename('Offer letter (3).pdf', 'file_key_123'),
+    'Offer_letter_3_.pdf',
+  );
+  assert.equal(
+    sanitizeAttachmentFilename('../..', 'file_key_123'),
     'file_key_123',
+  );
+  assert.equal(
+    sanitizeAttachmentFilename('合同.pdf', 'file_key_123'),
+    'file_key_123.pdf',
+  );
+  assert.equal(sanitizeAttachmentFilename('   ', 'file_key_123'), 'file_key_123');
+  assert.equal(
+    sanitizeAttachmentFilename(`${'a'.repeat(300)}.pdf`, 'file_key_123'),
+    `${'a'.repeat(251)}.pdf`,
   );
   assert.equal(
     sanitizeAttachmentFilename('report.pdf', 'file_key_123'),
