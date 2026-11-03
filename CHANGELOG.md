@@ -3,6 +3,26 @@
 Per-gateway versions live in each `<gateway>/package.json`. Entries list the
 gateway versions they changed.
 
+## Unreleased
+
+### lark-gateway 0.1.0 (new)
+
+Connects one Lark/Feishu bot app to AI Maestro through AMP over Lark's persistent
+long connection. Includes per-person open_id routing with slug-only AMP identity,
+injection scanning, durable inbound queue and 24-hour dedupe, thread context,
+attachments, Markdown cards and buttons, owner-checked card actions, progress
+reactions, retries, management endpoints, and Docker packaging.
+
+Replies are restricted to the owner agent recorded on a thread or the agent
+configured for a target person. Inbound attachments use AMP's upload, content,
+and confirm flow; outbound attachment references are fetched by capability URL.
+Card actions arrive over the persistent connection by default; HTTP callbacks
+are opt-in. Inbound poison messages use persisted backoff and parking, DM replies
+are quoted by default, and thread state is pruned and size-bounded. Tested with
+recorded/fake events and local fakes; no live Lark app credentials were
+available. See `lark-gateway/README.md` for Console setup and the live
+round-trip, attachment, and card-click smoke procedure.
+
 ## 2026-10-28 (4)
 
 ### Fix: a reply could fail with "No such file or directory" in the gateway inbox

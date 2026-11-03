@@ -1,0 +1,17 @@
+# Provisioning-owned mapping from Lark app open_id to the owner's person slug.
+# open_id values are app-specific. Never place them in AMP messages or logs.
+tenant: example
+default_reply_unknown: "This bot is not configured for your account. Please contact an administrator."
+disabled_person: "Your agent is paused. Please contact an administrator."
+group_pointer: "Please DM this bot to reach your AI Maestro agent."
+people:
+  alice:
+    open_id: ou_example_alice
+    agent: alice
+    enabled: true
+    admin: true
+  bob:
+    open_id: ou_example_bob
+    agent: bob
+    enabled: false
+    admin: false

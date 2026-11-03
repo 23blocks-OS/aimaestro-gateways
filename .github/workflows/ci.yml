@@ -33,7 +33,7 @@ jobs:
 
     strategy:
       matrix:
-        gateway: [discord-gateway, slack-gateway, email-gateway, whatsapp-gateway, google-chat-gateway]
+        gateway: [discord-gateway, slack-gateway, email-gateway, whatsapp-gateway, google-chat-gateway, lark-gateway]
 
     defaults:
       run:
